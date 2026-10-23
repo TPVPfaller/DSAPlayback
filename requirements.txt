@@ -1,0 +1,14 @@
+# Runtime dependencies for PlotDSA
+# Pinned with broad upper bounds to support reproducible installs while allowing bugfix updates.
+# Python: tested with 3.11
+
+numpy>=1.24,<3.0
+scipy>=1.10,<2.0
+PySide6>=6.5,<7.0
+pyqtgraph>=0.13,<0.14
+pylsl>=1.16,<2.0
+pyqtdarktheme
+
+# Test-only dependency (not required at runtime)
+pytest>=7,<9
+pytest-qt
