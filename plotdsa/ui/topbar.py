@@ -1,16 +1,19 @@
+import math
 import os
 from datetime import datetime
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QSlider,
-    QLabel, QFrame, QGraphicsOpacityEffect
+    QLabel, QFrame, QGraphicsOpacityEffect, QGraphicsView, QFileDialog
 )
 from PySide6.QtCore import (
-    QByteArray, QPoint, QSize, Qt, QRectF, QTimer,
+    QByteArray, QMarginsF, QPoint, QRect, QSize, QSizeF, Qt, QRectF, QTimer,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve
 )
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPixmap, QPolygon
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtGui import (
+    QColor, QFontMetrics, QIcon, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPixmap, QPolygon
+)
+from PySide6.QtSvg import QSvgGenerator, QSvgRenderer
 from .. import config
 
 
@@ -24,6 +27,11 @@ fill="#e3e3e3"><path d="M800-560v-120H680v-80h120q33 0 56.5 23.5T880-680v120h-80
 33-23.5 56.5T800-200H680Zm-520 0q-33 0-56.5-23.5T80-280v-120h80v120h120v80H160Z"/></svg>"""
 
 SCREENSHOT_DIR = os.path.join(os.path.dirname(config.BASE_DIR), "Screenshots")
+SCREENSHOT_FILTERS = {"PDF (*.pdf)": ".pdf", "SVG (*.svg)": ".svg", "PNG (*.png)": ".png"}
+# Device resolution used for vector exports: one widget pixel = one unit.
+SCREENSHOT_DPI = 96
+# PNG exports are rendered at this multiple of the on-screen size.
+SCREENSHOT_PNG_SCALE = 2
 
 SUCCESS_COLOR = "#3FA672"
 ERROR_COLOR = "#D9534F"
@@ -224,6 +232,8 @@ class TopBar(QWidget):
         self.on_calibrate = on_calibrate
         self._screenshot_flash = None
         self._screenshot_toast = None
+        # Callable returning the widgets to capture; defaults to the whole window.
+        self.screenshot_widgets = None
 
         self.GAMMA = 2.5 # Zoom shape parameter
 
@@ -366,14 +376,17 @@ class TopBar(QWidget):
         new_config = self.user_config.update(psd_db_min=config.PSD_DB_MIN, psd_db_max=config.PSD_DB_MAX)
         self.on_config_change(new_config)
 
-    def _take_screenshot(self, directory=SCREENSHOT_DIR):
-        """Save a PNG of the whole window and return its path (None on failure)."""
-        filename = datetime.now().strftime("DSA_%Y-%m-%d_%H%M%S") + ".png"
-        path = os.path.join(directory, filename)
+    def _take_screenshot(self, path=None):
+        """Save the views as vector PDF/SVG and return the path (None on cancel or failure)."""
         window = self.window()
+        if path is None:
+            path = self._ask_screenshot_path()
+            if not path:
+                return None
+        directory = os.path.dirname(os.path.abspath(path))
         try:
             os.makedirs(directory, exist_ok=True)
-            ok = window.grab().save(path, "PNG")  # grab before any overlay is shown
+            ok = self._render_screenshot(window, path)  # render before any overlay is shown
         except OSError:
             ok = False
 
@@ -382,6 +395,83 @@ class TopBar(QWidget):
         else:
             self._show_screenshot_feedback(window, False, "Screenshot failed", f"Could not write to {directory}")
         return path if ok else None
+
+    def _ask_screenshot_path(self):
+        filename = datetime.now().strftime("DSA_%Y-%m-%d_%H%M%S") + ".pdf"
+        try:
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        except OSError:
+            pass
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save Screenshot", os.path.join(SCREENSHOT_DIR, filename), ";;".join(SCREENSHOT_FILTERS)
+        )
+        if path and not os.path.splitext(path)[1]:
+            path += SCREENSHOT_FILTERS.get(selected_filter, ".pdf")
+        return path
+
+    def _capture_widgets(self, window):
+        widgets = self.screenshot_widgets() if self.screenshot_widgets else []
+        return [w for w in widgets if w.isVisible()] or [window]
+
+    def _render_screenshot(self, window, path):
+        widgets = self._capture_widgets(window)
+        rects = [QRect(w.mapTo(window, QPoint(0, 0)), w.size()) if w is not window else w.rect()
+                 for w in widgets]
+        bounds = rects[0]
+        for rect in rects[1:]:
+            bounds = bounds.united(rect)
+
+        extension = os.path.splitext(path)[1].lower()
+        if extension == ".png":
+            device = QImage(bounds.size() * SCREENSHOT_PNG_SCALE, QImage.Format.Format_RGB32)
+        elif extension == ".svg":
+            device = QSvgGenerator()
+            device.setFileName(path)
+            device.setSize(bounds.size())
+            device.setViewBox(QRect(QPoint(0, 0), bounds.size()))
+            device.setResolution(SCREENSHOT_DPI)
+            device.setTitle(os.path.basename(path))
+        else:
+            device = QPdfWriter(path)
+            device.setResolution(SCREENSHOT_DPI)
+            # Page sizes are whole points; round up so nothing is clipped (the extra is filled below).
+            size_pt = QSizeF(math.ceil(bounds.width() * 72.0 / SCREENSHOT_DPI),
+                             math.ceil(bounds.height() * 72.0 / SCREENSHOT_DPI))
+            device.setPageLayout(QPageLayout(
+                QPageSize(size_pt, QPageSize.Unit.Point), QPageLayout.Orientation.Portrait, QMarginsF(0, 0, 0, 0)
+            ))
+
+        painter = QPainter()
+        if not painter.begin(device):
+            return False
+        # Without this the PDF writer stores the DSA image as JPEG, which smears the cells.
+        painter.setRenderHint(QPainter.RenderHint.LosslessImageRendering)
+        try:
+            if extension == ".png":
+                painter.scale(SCREENSHOT_PNG_SCALE, SCREENSHOT_PNG_SCALE)
+            # Paint the whole page in the view background so no white page shows through
+            # seams between views or the rounded-up page edge.
+            painter.fillRect(painter.window(), self._screenshot_background(widgets))
+            for widget, rect in zip(widgets, rects):
+                offset = rect.topLeft() - bounds.topLeft()
+                if isinstance(widget, QGraphicsView):
+                    # Render the scene itself so axes and curves stay vector graphics.
+                    source = widget.viewport().rect()
+                    widget.render(painter, QRectF(QRect(offset, source.size())), source)
+                else:
+                    widget.render(painter, offset)
+        finally:
+            painter.end()
+        if extension == ".png" and not device.save(path, "PNG"):
+            return False
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+
+    @staticmethod
+    def _screenshot_background(widgets):
+        for widget in widgets:
+            if isinstance(widget, QGraphicsView):
+                return widget.backgroundBrush().color()
+        return QColor("black")
 
     def _show_screenshot_feedback(self, window, success, title, detail):
         if self._screenshot_toast is None or self._screenshot_toast.parentWidget() is not window:

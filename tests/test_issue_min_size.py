@@ -13,31 +13,8 @@ def app():
     return test_app
 
 @pytest.fixture
-def dsa_app(qtbot, app, monkeypatch):
+def dsa_app(qtbot, app):
     """Create a DSAApplication instance for testing."""
-    class DummyWorker:
-        def __init__(self, user_config):
-            self.user_config = user_config
-
-        def apply_config(self, user_config):
-            self.user_config = user_config
-
-        def stop(self):
-            pass
-
-    class DummyThread:
-        def quit(self):
-            pass
-
-        def wait(self):
-            pass
-
-    def fake_init_worker(self):
-        self.thread = DummyThread()
-        self.worker = DummyWorker(self.user_config)
-
-    monkeypatch.setattr(DSAApplication, "_init_worker", fake_init_worker)
-
     window = DSAApplication()
     qtbot.addWidget(window)
     return window

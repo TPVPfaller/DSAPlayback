@@ -15,21 +15,3 @@ if "qdarktheme" not in sys.modules:
     qdarktheme.enable_hi_dpi = lambda: None
     qdarktheme.setup_theme = lambda *args, **kwargs: None
     sys.modules["qdarktheme"] = qdarktheme
-
-
-if "pylsl" not in sys.modules:
-    pylsl = types.ModuleType("pylsl")
-
-    class StreamInlet:
-        def __init__(self, stream):
-            self.stream = stream
-
-        def pull_sample(self, timeout=0):
-            return None, None
-
-    def resolve_byprop(*args, **kwargs):
-        return []
-
-    pylsl.StreamInlet = StreamInlet
-    pylsl.resolve_byprop = resolve_byprop
-    sys.modules["pylsl"] = pylsl

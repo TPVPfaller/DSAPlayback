@@ -1,6 +1,6 @@
 ﻿# PlotDSA - EEG Density Spectral Array (DSA) Viewer
 
-PlotDSA is a PySide6 application for real-time EEG visualization, featuring a scrolling Density Spectral Array (DSA) heatmap and live raw EEG trace.
+DSAPlayback is the playback version of PlotDSA: a PySide6 application that visualizes recorded EEG data from CSV files, featuring a Density Spectral Array (DSA) heatmap and raw EEG trace.
 
 ## Quick Start
 ```powershell
@@ -20,7 +20,9 @@ python -m plotdsa.app.main
 
 
 ## Key Features
-- **Real-time Visualization**: Heatmap (frequency vs. time) and raw EEG trace via the `EEG_DATA` LSL stream.
+- **EEG File Playback**: Open an EEG recording (CSV) via "Load EEG File (CSV)" or by dropping it onto the DSA.
+  - **Load**: computes the whole DSA at once.
+  - **Play**: replays the recording in real time (heatmap and raw EEG trace).
 - **Configurable Settings**:
   - Welch/Multitaper
   - FFT Window Size
@@ -28,7 +30,6 @@ python -m plotdsa.app.main
   - DSA Color Mapping
   - Maximum Frequency
   - EEG Sweep Speed
-- **Data Export/Import**: Saves computed PSD data to CSV under `C:\temp\VSCaptureWave\DSA_Data` (maximum of 24h). Import PSD data with the "Load Data from Time" option.
 - **Execution**: Start-DSA-Layout.cmd launches the application with AnesthesiaUI. DSA.exe and VSCaptureWave.exe should
 be located in C:\temp\VSCaptureWave. 
 
@@ -49,7 +50,6 @@ Build the executable:
 python -m nuitka --onefile --standalone `
   --enable-plugin=pyside6 `
   --include-module=PySide6.QtOpenGL `
-  --include-data-file=".venv\Lib\site-packages\pylsl\lib\lsl.dll=pylsl/lib/lsl.dll" `
   --windows-icon-from-ico=app_icon.ico `
   --windows-console-mode=disable `
   --windows-product-version=1.0.0.0 `
@@ -57,13 +57,4 @@ python -m nuitka --onefile --standalone `
   --file-description="EEG Density Spectral Array Viewer" `
   --output-filename=DSA.exe `
   plotdsa\app\main.py
-```
-
-Build the emulator as a single-file executable:
-```powershell
-python -m nuitka --onefile --standalone `
-  --include-data-file=".venv\Lib\site-packages\pylsl\lib\lsl.dll=pylsl/lib/lsl.dll" `
-  --windows-console-mode=force `
-  --output-filename=DSAEmulator.exe `
-  plotdsa\tools\emulator.py
 ```

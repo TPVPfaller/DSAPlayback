@@ -4,15 +4,26 @@ import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..core.buffers import EEGBuffer
-from ..io.eeg_file import dsa_columns_from_samples
+from ..io.eeg_file import snap_dsa_column
 from .. import config
 
 
+def _method(user_config):
+    return "multitaper" if user_config.use_multitaper else "welch"
+
+
 class EEGFilePlayer(QObject):
-    """Replays a loaded EEG recording in real time on the GUI thread."""
+    """
+    Replays a loaded EEG recording in real time on the GUI thread.
+
+    All DSA columns are computed up front; during playback each column is
+    emitted when the sample completing its window is played, exactly as if
+    it had been computed while streaming.
+    """
 
     new_dsa_column = Signal(float, object, int)  # timestamp, psd, steps
     new_samples = Signal(object)  # list of eeg values
+    position_changed = Signal(float)  # seconds since recording start
     finished = Signal()
 
     TICK_MS = 50
@@ -21,12 +32,16 @@ class EEGFilePlayer(QObject):
         super().__init__(parent)
         self.user_config = user_config
         self.is_playing = False
+        self.speed = 1.0
         self._timestamps = np.empty(0)
         self._values = np.empty(0)
         self._pos = 0
         self._anchor_pos = 0
         self._anchor_wall = 0.0
-        self._eeg_buffer = None
+        self.dsa_columns = []  # [(ts, psd, steps)] of the whole recording
+        self.column_starts = np.empty(0, dtype=np.int64)  # first sample index of each column
+        self._column_ready = np.empty(0, dtype=np.int64)  # samples played before a column is shown
+        self._next_column = 0
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.TICK_MS)
@@ -37,7 +52,8 @@ class EEGFilePlayer(QObject):
         self._timestamps = np.asarray(timestamps, dtype=np.float64)
         self._values = np.asarray(values, dtype=np.float64)
         self._pos = 0
-        self._eeg_buffer = EEGBuffer(self.user_config.window_sec, self.user_config.window_overlap)
+        self._compute_columns()
+        self._next_column = 0
         self._reset_anchor()
         self.is_playing = True
         self._timer.start()
@@ -46,14 +62,71 @@ class EEGFilePlayer(QObject):
         self._timer.stop()
         self.is_playing = False
 
+    pause = stop
+
+    def resume(self):
+        """Continue playback from the current position (restarts if at the end)."""
+        if len(self._timestamps) == 0 or self.is_playing:
+            return
+        if self._pos >= len(self._timestamps):
+            self.seek(0.0)
+        self._reset_anchor()
+        self.is_playing = True
+        self._timer.start()
+
+    def set_speed(self, speed):
+        """Play `speed` recording seconds per wall-clock second from the current position."""
+        self.speed = float(speed)
+        self._reset_anchor()
+
+    @property
+    def duration(self):
+        return len(self._timestamps) / config.SAMPLE_RATE_HZ
+
+    @property
+    def position(self):
+        return self._pos / config.SAMPLE_RATE_HZ
+
+    def seek(self, seconds):
+        """
+        Jump to `seconds` and return the DSA columns [(ts, psd, steps)] of the
+        recording up to there, so the caller can rebuild the DSA view.
+        """
+        self._pos = int(min(max(seconds, 0.0), self.duration) * config.SAMPLE_RATE_HZ)
+        self._next_column = int(np.searchsorted(self._column_ready, self._pos, side="right"))
+        self._reset_anchor()
+        self.position_changed.emit(self.position)
+        return self.dsa_columns[:self._next_column]
+
     def apply_config(self, user_config):
+        """Returns True if the DSA columns were recomputed (DSA settings changed)."""
         old_config = self.user_config
         self.user_config = user_config
-        if self._eeg_buffer is not None and (
+        if len(self._timestamps) and (
             old_config.window_sec != user_config.window_sec
             or old_config.window_overlap != user_config.window_overlap
+            or old_config.use_multitaper != user_config.use_multitaper
         ):
-            self._eeg_buffer.apply_config(user_config.window_sec, user_config.window_overlap)
+            self._compute_columns()
+            self._next_column = int(np.searchsorted(self._column_ready, self._pos, side="right"))
+            return True
+        return False
+
+    def _compute_columns(self):
+        eeg_buffer = EEGBuffer(self.user_config.window_sec, self.user_config.window_overlap)
+        hop_sec = eeg_buffer.hop_len / config.SAMPLE_RATE_HZ
+        samples = list(zip(self._timestamps.tolist(), self._values.tolist()))
+        columns, starts = [], []
+        for ts, psd in eeg_buffer.get_dsa_columns(samples, method=_method(self.user_config)):
+            if psd is None:
+                continue
+            snapped_ts, steps = snap_dsa_column(ts, hop_sec)
+            columns.append((snapped_ts, psd, steps))
+            starts.append(int(np.searchsorted(self._timestamps, ts)))
+        self.dsa_columns = columns
+        self.column_starts = np.asarray(starts, dtype=np.int64)
+        # A window is complete once its last sample has been played.
+        self._column_ready = self.column_starts + eeg_buffer.window_len
 
     def _reset_anchor(self):
         self._anchor_pos = self._pos
@@ -62,22 +135,19 @@ class EEGFilePlayer(QObject):
     def _tick(self):
         total = len(self._timestamps)
         elapsed = time.perf_counter() - self._anchor_wall
-        target = min(total, self._anchor_pos + int(elapsed * config.SAMPLE_RATE_HZ))
+        target = min(total, self._anchor_pos + int(elapsed * self.speed * config.SAMPLE_RATE_HZ))
         if target > self._pos:
             start, self._pos = self._pos, target
             self._emit_chunk(start, target)
+            self.position_changed.emit(self.position)
 
         if self._pos >= total:
             self.stop()
             self.finished.emit()
 
     def _emit_chunk(self, start, end):
-        ts = self._timestamps[start:end]
-        vals = self._values[start:end]
+        self.new_samples.emit(self._values[start:end].tolist())
 
-        self.new_samples.emit(vals.tolist())
-
-        method = "multitaper" if self.user_config.use_multitaper else "welch"
-        samples = list(zip(ts.tolist(), vals.tolist()))
-        for col_ts, psd, steps in dsa_columns_from_samples(self._eeg_buffer, samples, method):
-            self.new_dsa_column.emit(col_ts, psd, steps)
+        while self._next_column < len(self.dsa_columns) and self._column_ready[self._next_column] <= end:
+            self.new_dsa_column.emit(*self.dsa_columns[self._next_column])
+            self._next_column += 1

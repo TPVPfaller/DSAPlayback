@@ -5,7 +5,7 @@ import pytest
 
 from plotdsa import config
 from plotdsa.config import UserConfig
-from plotdsa.io.eeg_file import compute_dsa_columns, read_eeg_csv, snap_dsa_column
+from plotdsa.io.eeg_file import compute_dsa_columns, is_single_column, read_eeg_csv, snap_dsa_column
 
 DAY = datetime.date(2026, 10, 19)
 
@@ -156,3 +156,34 @@ def test_compute_dsa_columns_returns_nothing_for_recording_shorter_than_window(t
     timestamps, values = read_eeg_csv(path, base_date=DAY)
 
     assert compute_dsa_columns(timestamps, values, user_config) == []
+
+
+def test_is_single_column_detects_value_only_files(tmp_path):
+    single = tmp_path / "single.csv"
+    single.write_text("value\n-82\n-80\n")
+    double = tmp_path / "double.csv"
+    double.write_text("20:12:06.2613,-82\n")
+
+    assert is_single_column(single) is True
+    assert is_single_column(double) is False
+    assert is_single_column(tmp_path / "missing.csv") is False
+
+
+def test_read_eeg_csv_single_column_uses_given_sample_rate(tmp_path):
+    path = tmp_path / "eeg.csv"
+    path.write_text("value\n" + "\n".join(str(i) for i in range(500)) + "\n")  # 2 s at 250 Hz
+
+    timestamps, values = read_eeg_csv(path, base_date=DAY, sample_rate_hz=250)
+
+    midnight = datetime.datetime.combine(DAY, datetime.time()).timestamp()
+    assert timestamps[0] == pytest.approx(midnight)
+    assert np.diff(timestamps).tolist() == pytest.approx([1 / config.SAMPLE_RATE_HZ] * (len(timestamps) - 1), abs=1e-6)
+    assert timestamps[-1] - timestamps[0] == pytest.approx(499 / 250, abs=1 / config.SAMPLE_RATE_HZ)
+
+
+def test_read_eeg_csv_single_column_rejects_non_positive_rate(tmp_path):
+    path = tmp_path / "eeg.csv"
+    path.write_text("1\n2\n3\n")
+
+    with pytest.raises(ValueError):
+        read_eeg_csv(path, sample_rate_hz=0)

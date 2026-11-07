@@ -116,14 +116,106 @@ def test_player_restart_begins_new_recording_from_first_sample(player, clock, re
     assert restarted == pytest.approx((recording[1][:100] + 1.0).tolist())
 
 
-def test_player_apply_config_reconfigures_buffer_only_when_window_changes(player, recording, monkeypatch):
+def test_player_apply_config_recomputes_columns_only_when_dsa_settings_change(player, recording):
     _start(player, recording)
-    calls = []
-    monkeypatch.setattr(player._eeg_buffer, "apply_config", lambda sec, overlap: calls.append((sec, overlap)))
+    columns_before = player.dsa_columns
 
-    player.apply_config(player.user_config.update(psd_db_min=-30))
-    assert calls == []
+    assert player.apply_config(player.user_config.update(psd_db_min=-30)) is False
+    assert player.dsa_columns is columns_before
 
-    player.apply_config(player.user_config.update(window_sec=4))
-    assert calls == [(4, player.user_config.window_overlap)]
+    assert player.apply_config(player.user_config.update(window_sec=4)) is True
     assert player.user_config.window_sec == 4
+    expected = compute_dsa_columns(*recording, player.user_config)
+    assert [c[0] for c in player.dsa_columns] == [e[0] for e in expected]
+
+
+def test_player_precomputes_all_columns_on_start(player, recording):
+    _start(player, recording)
+
+    expected = compute_dsa_columns(*recording, UserConfig())
+    assert len(player.dsa_columns) == len(expected) > 0
+    assert player.column_starts[0] == 0
+    assert player.samples == []  # nothing is emitted before playback advances
+
+
+def test_player_pause_holds_position_and_resume_continues(player, clock, recording):
+    _start(player, recording)
+    clock.now += 1.0
+    player._tick()
+    player.pause()
+    assert player.is_playing is False
+
+    clock.now += 2.0  # time passing while paused must not be played back
+    player.resume()
+    player._timer.stop()
+    clock.now += 0.5
+    player._tick()
+
+    assert len(player.samples) == int(1.5 * config.SAMPLE_RATE_HZ)
+    assert player.samples == pytest.approx(recording[1][:len(player.samples)].tolist())
+
+
+def test_player_seek_returns_dsa_up_to_position_and_continues_from_there(player, clock, recording):
+    _start(player, recording)
+    positions = []
+    player.position_changed.connect(positions.append)
+
+    columns = player.seek(4.0)
+
+    expected = compute_dsa_columns(recording[0][:4 * config.SAMPLE_RATE_HZ],
+                                   recording[1][:4 * config.SAMPLE_RATE_HZ], UserConfig())
+    assert len(columns) == len(expected) > 0
+    assert [c[0] for c in columns] == [e[0] for e in expected]
+    assert player.position == pytest.approx(4.0)
+    assert positions == [pytest.approx(4.0)]
+
+    clock.now += 0.5
+    player._tick()
+    assert player.samples == pytest.approx(recording[1][4 * config.SAMPLE_RATE_HZ:4 * config.SAMPLE_RATE_HZ + len(player.samples)].tolist())
+
+
+def test_player_seek_backward_and_out_of_range_is_clamped(player, clock, recording):
+    _start(player, recording)
+    clock.now += 3.0
+    player._tick()
+
+    assert player.seek(-5.0) == []
+    assert player.position == 0.0
+    player.seek(100.0)
+    assert player.position == pytest.approx(player.duration)
+
+
+def test_player_resume_at_end_restarts_from_beginning(player, clock, recording):
+    _start(player, recording)
+    clock.now += 10.0
+    player._tick()
+    assert player.finish_count[0] == 1
+
+    player.resume()
+    player._timer.stop()
+
+    assert player.is_playing is True
+    assert player.position == 0.0
+
+
+def test_player_speed_scales_samples_per_wall_second(player, clock, recording):
+    _start(player, recording)
+    clock.now += 0.5
+    player._tick()
+    player.set_speed(4.0)
+
+    clock.now += 0.5
+    player._tick()
+
+    assert len(player.samples) == int(0.5 * config.SAMPLE_RATE_HZ) + int(2.0 * config.SAMPLE_RATE_HZ)
+    assert player.position == pytest.approx(2.5)
+
+
+def test_overview_image_uses_latest_column_without_averaging():
+    from plotdsa.ui.dsa_overview import overview_image
+
+    psds = [np.full(3, 10.0), np.full(3, 100.0)]  # 10 dB, 20 dB
+    image = overview_image([1.0, 2.0], psds, duration=4.0, bins=4)
+
+    assert np.isnan(image[0]).all()  # before the first column
+    assert image[1:, 0].tolist() == pytest.approx([10.0, 20.0, 20.0])

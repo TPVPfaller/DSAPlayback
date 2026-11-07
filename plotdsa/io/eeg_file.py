@@ -8,6 +8,9 @@ Expected format (one sample per line, no header required):
 
 The time column may also carry a date ("2024-05-01 20:12:06.2613").
 Files without a date are placed on ``base_date`` (default: today).
+
+Files with a single value column (no timestamps) are also accepted; their
+sampling rate must be given and they start at midnight of ``base_date``.
 """
 import datetime
 import math
@@ -59,6 +62,41 @@ def _parse_lines(lines):
     return times, values, bool(has_date)
 
 
+def _parse_single_column(lines):
+    """Return the EEG values of a file with one value per line."""
+    values = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            v = float(_SPLIT_RE.split(line)[0])
+        except ValueError:
+            continue  # header line
+        values.append(v if math.isfinite(v) else np.nan)
+    return values
+
+
+def is_single_column(path):
+    """True if the first data line of the file holds a single value (no timestamp)."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                parts = [p for p in _SPLIT_RE.split(line.strip()) if p.strip()]
+                if not parts:
+                    continue
+                if len(parts) >= 2:
+                    return False
+                try:
+                    float(parts[0])
+                except ValueError:
+                    continue  # header line
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _unwrap_midnight(seconds):
     """Add a day whenever time-of-day jumps back by more than 12 h."""
     jumps = np.diff(seconds) < -_SECONDS_PER_DAY / 2
@@ -87,16 +125,25 @@ def _resample(timestamps, values, rate_hz):
     return new_ts, new_values
 
 
-def read_eeg_csv(path, base_date=None):
+def read_eeg_csv(path, base_date=None, sample_rate_hz=None):
     """
     Read a raw EEG CSV file.
 
+    sample_rate_hz is required for single-column files (values only) and ignored otherwise.
     Returns (timestamps, values): epoch seconds (float64) and EEG values (float64),
     resampled to config.SAMPLE_RATE_HZ if the file uses a different rate.
     Raises ValueError if the file contains no usable samples.
     """
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
-        times, values, has_date = _parse_lines(handle)
+    if sample_rate_hz is not None and is_single_column(path):
+        if sample_rate_hz <= 0:
+            raise ValueError("Sampling rate must be positive.")
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            values = _parse_single_column(handle)
+        times = (np.arange(len(values)) / float(sample_rate_hz)).tolist()
+        has_date = False
+    else:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            times, values, has_date = _parse_lines(handle)
 
     if len(times) < 2:
         raise ValueError("No valid EEG samples found in file.")

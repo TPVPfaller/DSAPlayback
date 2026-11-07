@@ -21,34 +21,8 @@ def app():
 
 
 @pytest.fixture
-def dsa_app(qtbot, app, monkeypatch):
+def dsa_app(qtbot, app):
     """Create a DSAApplication instance for testing."""
-    class DummyWorker:
-        def __init__(self, user_config):
-            self.user_config = user_config
-
-        def apply_config(self, user_config):
-            self.user_config = user_config
-
-        def stop(self):
-            pass
-
-    class DummyThread:
-        def __init__(self):
-            self.running = False
-
-        def quit(self):
-            pass
-
-        def isRunning(self):
-            return self.running
-
-    def fake_init_worker(self):
-        self.thread = DummyThread()
-        self.worker = DummyWorker(self.user_config)
-
-    monkeypatch.setattr(DSAApplication, "_init_worker", fake_init_worker)
-
     window = DSAApplication()
     qtbot.addWidget(window)
     window.show()
@@ -138,17 +112,28 @@ def test_multitaper_menu_action_updates_user_config(dsa_app):
     dsa_app.action_multitaper.trigger()
 
     assert dsa_app.user_config.use_multitaper is False
-    assert dsa_app.worker.user_config.use_multitaper is False
+    assert dsa_app.player.user_config.use_multitaper is False
 
 
-def test_on_new_samples_is_ignored_when_eeg_view_is_hidden(dsa_app):
+def test_file_samples_are_ignored_when_eeg_view_is_hidden(dsa_app, monkeypatch):
+    monkeypatch.setattr(dsa_app.player, "is_playing", True)
     dsa_app.eeg_view.hide()
-    before = dsa_app._last_data_receive_time
 
-    dsa_app._on_new_samples([1.0, 2.0, 3.0])
+    dsa_app._on_file_samples([1.0, 2.0, 3.0])
 
     assert len(dsa_app.eeg_view._pending) == 0
-    assert dsa_app._last_data_receive_time >= before
+
+
+def test_menu_has_no_load_data_from_time_entry(dsa_app):
+    texts = [
+        action.text()
+        for menu_action in dsa_app.menuBar().actions()
+        if menu_action.menu() is not None
+        for action in menu_action.menu().actions()
+    ]
+
+    assert "Load EEG File (CSV)" in texts
+    assert "Load Data from Time" not in texts
 
 
 def test_on_config_change_updates_psd_view_ranges(dsa_app):
@@ -163,86 +148,6 @@ def test_on_config_change_updates_psd_view_ranges(dsa_app):
     assert x_range[1] == pytest.approx(30)
     assert y_range[0] == pytest.approx(-15)
     assert y_range[1] == pytest.approx(30)
-
-
-def test_load_data_uses_fractional_duration_to_append_expected_dsa_steps(dsa_app, monkeypatch):
-    psd = np.ones(len(dsa_app.dsa_view.freq_bins), dtype=np.float32)
-    appended = []
-
-    monkeypatch.setattr(
-        "main.Output.load_psd_from_time",
-        lambda start_time_dt: [(1000.0, 3 * config.TIME_RESOLUTION, psd)]
-    )
-    monkeypatch.setattr(dsa_app.dsa_view, "append", lambda ts, loaded_psd: appended.append((ts, loaded_psd)))
-
-    dsa_app._load_data_from_time(time.time())
-
-    assert [ts for ts, _ in appended] == pytest.approx(
-        [1000.0 + i * config.TIME_RESOLUTION for i in range(3)]
-    )
-
-
-def test_load_data_rounds_short_duration_up_to_one_dsa_step(dsa_app, monkeypatch):
-    psd = np.ones(len(dsa_app.dsa_view.freq_bins), dtype=np.float32)
-    appended = []
-
-    monkeypatch.setattr(
-        "main.Output.load_psd_from_time",
-        lambda start_time_dt: [(1000.0, config.TIME_RESOLUTION / 3.0, psd)]
-    )
-    monkeypatch.setattr(dsa_app.dsa_view, "append", lambda ts, loaded_psd: appended.append((ts, loaded_psd)))
-
-    dsa_app._load_data_from_time(time.time())
-
-    assert len(appended) == 1
-    assert appended[0][0] == pytest.approx(1000.0)
-    np.testing.assert_array_equal(appended[0][1], psd)
-
-
-def test_load_data_from_time_does_not_clear_eeg_view(dsa_app, monkeypatch):
-    psd = np.ones(len(dsa_app.dsa_view.freq_bins), dtype=np.float32)
-
-    monkeypatch.setattr(
-        "main.Output.load_psd_from_time",
-        lambda start_time_dt: [(1000.0, 0.1, psd)]
-    )
-
-    clear_calls = []
-    monkeypatch.setattr(dsa_app.eeg_view, "clear_data", lambda: clear_calls.append("cleared"))
-    monkeypatch.setattr(dsa_app.dsa_view, "append", lambda ts, loaded_psd: None)
-
-    dsa_app._load_data_from_time(time.time())
-
-    assert clear_calls == []
-
-
-def test_load_data_from_time_reports_errors_without_clearing_existing_dsa(dsa_app, monkeypatch):
-    clear_calls = []
-    shown_messages = []
-
-    def raise_load_error(start_time_dt):
-        raise RuntimeError("broken csv")
-
-    monkeypatch.setattr("main.Output.load_psd_from_time", raise_load_error)
-    monkeypatch.setattr(dsa_app.dsa_view, "clear_data", lambda: clear_calls.append("cleared"))
-    monkeypatch.setattr(dsa_app, "_show_message", lambda title, text: shown_messages.append((title, text)))
-
-    dsa_app._load_data_from_time(time.time())
-
-    assert clear_calls == []
-    assert shown_messages == [("Load Error", "Failed to load data: broken csv")]
-
-
-def test_load_data_from_time_keeps_existing_dsa_when_no_rows_found(dsa_app, monkeypatch):
-    clear_calls = []
-
-    monkeypatch.setattr("main.Output.load_psd_from_time", lambda start_time_dt: [])
-    monkeypatch.setattr(dsa_app.dsa_view, "clear_data", lambda: clear_calls.append("cleared"))
-    monkeypatch.setattr(dsa_app, "_show_message", lambda *args, **kwargs: None)
-
-    dsa_app._load_data_from_time(time.time())
-
-    assert clear_calls == []
 
 
 @pytest.mark.parametrize(
@@ -276,41 +181,17 @@ def test_eeg_view_stops_render_timer_when_closed(qtbot):
     assert view._timer.isActive() is False
 
 
-def test_close_event_waits_asynchronously_for_running_worker(dsa_app):
-    class ClosingWorker:
-        def __init__(self):
-            self.stop_called = False
+def test_close_event_stops_playback_and_timer(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=3)
+    assert dsa_app._play_eeg_file(str(path)) is True
 
-        def stop(self):
-            self.stop_called = True
+    event = QCloseEvent()
+    dsa_app.closeEvent(event)
 
-    class ClosingThread:
-        def __init__(self):
-            self.running = True
-            self.quit_called = False
-
-        def quit(self):
-            self.quit_called = True
-
-        def isRunning(self):
-            return self.running
-
-    dsa_app.worker = ClosingWorker()
-    dsa_app.thread = ClosingThread()
-
-    first_event = QCloseEvent()
-    dsa_app.closeEvent(first_event)
-
-    assert dsa_app.worker.stop_called is True
-    assert dsa_app.thread.quit_called is True
-    assert first_event.isAccepted() is False
+    assert event.isAccepted() is True
+    assert dsa_app.player.is_playing is False
     assert dsa_app.status_timer.isActive() is False
-
-    dsa_app.thread.running = False
-    second_event = QCloseEvent()
-    dsa_app.closeEvent(second_event)
-
-    assert second_event.isAccepted() is True
 
 
 def _write_test_eeg_csv(path, seconds=10):
@@ -324,21 +205,16 @@ def _write_test_eeg_csv(path, seconds=10):
     path.write_text("\n".join(lines) + "\n")
 
 
-def test_load_eeg_csv_file_fills_dsa_and_blocks_live_data(dsa_app, tmp_path):
+def test_load_eeg_csv_file_fills_dsa_and_clear_empties_it(dsa_app, tmp_path):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path)
 
     assert dsa_app._load_eeg_file(str(path)) is True
-
-    assert dsa_app._file_mode is True
     assert dsa_app.dsa_view.dsa_buffer.t0 is not None
-    filled = len(dsa_app.dsa_view.dsa_buffer.buffers[config.TIME_RESOLUTION]["data"])
-    dsa_app._on_new_dsa_column(time.time(), np.ones(len(config.FREQ_BINS)), 1)
-    assert len(dsa_app.dsa_view.dsa_buffer.buffers[config.TIME_RESOLUTION]["data"]) == filled
 
-    dsa_app._return_to_live()
-    assert dsa_app._file_mode is False
+    dsa_app._clear_data()
     assert dsa_app.dsa_view.dsa_buffer.t0 is None
+    assert dsa_app.windowTitle() == main_module.WINDOW_TITLE
 
 
 def test_play_eeg_csv_file_emits_dsa_columns(dsa_app, tmp_path, qtbot):
@@ -366,10 +242,12 @@ def test_open_eeg_file_asks_whether_to_load_or_play(dsa_app, monkeypatch, choice
     assert calls == expected
 
 
-def test_dropping_csv_on_dsa_view_emits_file_path(dsa_app, tmp_path, qtbot):
+def test_dropping_csv_on_dsa_view_emits_file_path(dsa_app, tmp_path, qtbot, monkeypatch):
     from PySide6.QtCore import QMimeData, QPointF, QUrl, Qt
     from PySide6.QtGui import QDropEvent
 
+    # The drop opens the modal Load/Play dialog, which would block the test.
+    monkeypatch.setattr(dsa_app, "_ask_load_or_play", lambda p: None)
     path = tmp_path / "eeg.csv"
     path.write_text("20:12:06.2613,-82\n")
     mime = QMimeData()
@@ -380,17 +258,18 @@ def test_dropping_csv_on_dsa_view_emits_file_path(dsa_app, tmp_path, qtbot):
     with qtbot.waitSignal(dsa_app.dsa_view.eeg_file_dropped, timeout=1000) as blocker:
         dsa_app.dsa_view.dropEvent(event)
 
-    assert blocker.args == [str(path)]
+    assert len(blocker.args) == 1
+    assert os.path.samefile(blocker.args[0], path)
 
 
-def test_load_eeg_file_reports_errors_and_stays_live(dsa_app, tmp_path, monkeypatch):
+def test_load_eeg_file_reports_errors(dsa_app, tmp_path, monkeypatch):
     path = tmp_path / "eeg.csv"
     path.write_text("garbage\n")
     shown = []
     monkeypatch.setattr(dsa_app, "_show_message", lambda title, text: shown.append(title))
 
     assert dsa_app._load_eeg_file(str(path)) is False
-    assert dsa_app._file_mode is False
+    assert dsa_app._file_name is None
     assert shown == ["Load Error"]
 
 
@@ -408,28 +287,40 @@ def test_open_eeg_file_remembers_folder_for_next_file_dialog(dsa_app, tmp_path, 
     assert os.path.samefile(dsa_app._eeg_start_dir(), tmp_path)
 
 
-def test_loaded_and_played_eeg_files_are_not_saved_to_dsa_data(dsa_app, tmp_path, monkeypatch):
-    saved = []
-    monkeypatch.setattr("main.Output.save_psd_to_csv", lambda *args: saved.append(args))
+def test_load_single_column_file_asks_for_sample_rate(dsa_app, tmp_path, monkeypatch):
     path = tmp_path / "eeg.csv"
-    _write_test_eeg_csv(path, seconds=5)
+    rate = config.SAMPLE_RATE_HZ
+    values = 50 * np.sin(2 * np.pi * 10 * np.arange(10 * rate) / rate)
+    path.write_text("\n".join(f"{v:.3f}" for v in values) + "\n")
+    asked = []
+
+    def fake_get_double(parent, title, label, value, *args):
+        asked.append(value)
+        return value, True
+
+    monkeypatch.setattr(main_module.QInputDialog, "getDouble", fake_get_double)
 
     assert dsa_app._load_eeg_file(str(path)) is True
-    assert dsa_app._play_eeg_file(str(path)) is True
-    dsa_app.player._emit_chunk(0, len(dsa_app.player._timestamps))
-
-    assert dsa_app.dsa_view.dsa_buffer.t0 is not None
-    assert saved == []
+    assert asked == [400.0]
 
 
-def test_load_eeg_file_shorter_than_window_shows_message_and_stays_live(dsa_app, tmp_path, monkeypatch):
+def test_cancelling_sample_rate_prompt_aborts_play(dsa_app, tmp_path, monkeypatch):
+    path = tmp_path / "eeg.csv"
+    path.write_text("1\n2\n3\n")
+    monkeypatch.setattr(main_module.QInputDialog, "getDouble", lambda *a: (400.0, False))
+
+    assert dsa_app._play_eeg_file(str(path)) is False
+    assert dsa_app._file_name is None
+
+
+def test_load_eeg_file_shorter_than_window_shows_message(dsa_app, tmp_path, monkeypatch):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path, seconds=1)
     shown = []
     monkeypatch.setattr(dsa_app, "_show_message", lambda title, text: shown.append(title))
 
     assert dsa_app._load_eeg_file(str(path)) is False
-    assert dsa_app._file_mode is False
+    assert dsa_app._file_name is None
     assert shown == ["Load EEG File"]
 
 
@@ -445,41 +336,216 @@ def test_load_eeg_file_zooms_to_recording_length(dsa_app, tmp_path, monkeypatch)
     assert "File: eeg.csv" in dsa_app.windowTitle()
 
 
-def test_play_eeg_file_reports_errors_and_stays_live(dsa_app, tmp_path, monkeypatch):
+def test_play_eeg_file_reports_errors(dsa_app, tmp_path, monkeypatch):
     path = tmp_path / "eeg.csv"
     path.write_text("garbage\n")
     shown = []
     monkeypatch.setattr(dsa_app, "_show_message", lambda title, text: shown.append(title))
 
     assert dsa_app._play_eeg_file(str(path)) is False
-    assert dsa_app._file_mode is False
+    assert dsa_app._file_name is None
     assert dsa_app.player.is_playing is False
     assert shown == ["Load Error"]
 
 
-def test_file_mode_routes_eeg_samples_from_file_only(dsa_app, monkeypatch):
+def test_file_samples_are_shown_only_while_playing(dsa_app, tmp_path, monkeypatch):
     appended = []
     monkeypatch.setattr(dsa_app.eeg_view, "append_sample", appended.append)
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=3)
 
-    dsa_app._enter_file_mode("eeg.csv")
-    dsa_app._on_new_samples([1.0, 2.0])
+    assert dsa_app._play_eeg_file(str(path)) is True
     dsa_app._on_file_samples([3.0])
     assert appended == [3.0]
 
-    dsa_app._return_to_live()
+    dsa_app._clear_data()
     dsa_app._on_file_samples([4.0])
-    dsa_app._on_new_samples([5.0])
-    assert appended == [3.0, 5.0]
+    assert appended == [3.0]
 
 
-def test_return_to_live_stops_playback_and_ignores_late_file_columns(dsa_app, tmp_path):
+def test_clear_data_stops_playback_and_ignores_late_file_columns(dsa_app, tmp_path):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path, seconds=3)
     assert dsa_app._play_eeg_file(str(path)) is True
 
-    dsa_app._return_to_live()
+    dsa_app._clear_data()
 
     assert dsa_app.player.is_playing is False
     assert dsa_app.windowTitle() == main_module.WINDOW_TITLE
     dsa_app._on_file_dsa_column(time.time(), np.ones(len(config.FREQ_BINS)), 1)
     assert dsa_app.dsa_view.dsa_buffer.t0 is None
+
+
+@pytest.mark.parametrize("suffix", [".pdf", ".svg", ".png"])
+def test_screenshot_saves_file_of_views_only(dsa_app, tmp_path, monkeypatch, suffix):
+    import plotdsa.ui.topbar as topbar_module
+
+    monkeypatch.setattr(topbar_module.TopBar, "_show_screenshot_feedback", lambda *a: None)
+    path = str(tmp_path / f"shot{suffix}")
+
+    assert dsa_app.topbar._take_screenshot(path) == path
+    assert os.path.getsize(path) > 0
+
+    views = [v for v in (dsa_app.dsa_view, dsa_app.psd_view, dsa_app.eeg_view) if v.isVisible()]
+    top = min(v.mapTo(dsa_app, v.rect().topLeft()).y() for v in views)
+    assert top >= dsa_app.topbar.mapTo(dsa_app, dsa_app.topbar.rect().bottomLeft()).y()
+    if suffix == ".svg":
+        width = max(v.width() for v in views)
+        height = sum(v.height() for v in views)
+        assert f'viewBox="0 0 {width} {height}"' in open(path, encoding="utf-8").read(2000)
+    if suffix == ".png":
+        from PySide6.QtGui import QImage
+
+        image = QImage(path)
+        scale = topbar_module.SCREENSHOT_PNG_SCALE
+        assert image.width() == max(v.width() for v in views) * scale
+        assert image.height() == sum(v.height() for v in views) * scale
+        # No white rows: the background is painted edge to edge.
+        assert image.pixelColor(image.width() // 2, image.height() - 1).lightness() < 128
+
+
+def test_screenshot_cancelled_dialog_saves_nothing(dsa_app, monkeypatch):
+    import plotdsa.ui.topbar as topbar_module
+
+    monkeypatch.setattr(topbar_module.QFileDialog, "getSaveFileName", lambda *a, **k: ("", ""))
+
+    assert dsa_app.topbar._take_screenshot() is None
+
+
+@pytest.mark.parametrize("selected_filter, suffix", [("SVG (*.svg)", ".svg"), ("PNG (*.png)", ".png")])
+def test_screenshot_dialog_adds_extension_from_selected_type(dsa_app, tmp_path, monkeypatch, selected_filter, suffix):
+    import plotdsa.ui.topbar as topbar_module
+
+    target = str(tmp_path / "shot")
+    monkeypatch.setattr(topbar_module.QFileDialog, "getSaveFileName", lambda *a, **k: (target, selected_filter))
+
+    assert dsa_app.topbar._ask_screenshot_path() == target + suffix
+
+
+def test_pdf_screenshot_stores_dsa_image_lossless(dsa_app, tmp_path, monkeypatch):
+    import plotdsa.ui.topbar as topbar_module
+
+    monkeypatch.setattr(topbar_module.TopBar, "_show_screenshot_feedback", lambda *a: None)
+    eeg = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(eeg)
+    assert dsa_app._load_eeg_file(str(eeg)) is True
+    path = str(tmp_path / "shot.pdf")
+
+    assert dsa_app.topbar._take_screenshot(path) == path
+    raw = open(path, "rb").read()
+    assert b"/Subtype /Image" in raw
+    assert b"/DCTDecode" not in raw  # JPEG would blur the DSA cells
+
+
+def test_playback_bar_only_visible_while_playing_a_file(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=10)
+    assert dsa_app.playback_bar.isVisible() is False
+
+    assert dsa_app._play_eeg_file(str(path)) is True
+    assert dsa_app.playback_bar.isVisible() is True
+    assert dsa_app.playback_bar.time_label.text() == "00:00 / 00:10"
+
+    assert dsa_app._load_eeg_file(str(path)) is True
+    assert dsa_app.playback_bar.isVisible() is False
+
+
+def test_playback_bar_pauses_and_resumes_player(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=10)
+    dsa_app._play_eeg_file(str(path))
+
+    dsa_app.playback_bar.play_btn.click()
+    assert dsa_app.player.is_playing is False
+    assert "Paused" in dsa_app.windowTitle()
+
+    dsa_app.playback_bar.play_btn.click()
+    assert dsa_app.player.is_playing is True
+    assert "Playing" in dsa_app.windowTitle()
+
+
+def test_dragging_overview_rectangle_seeks_and_rebuilds_dsa(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=30)
+    dsa_app._play_eeg_file(str(path))
+    dsa_app.playback_bar.play_btn.click()  # pause so the position stays put
+    overview = dsa_app.playback_bar.overview
+
+    overview.region.setRegion((10.0, 20.0))  # same signal as finishing a drag
+    assert dsa_app.player.position == pytest.approx(20.0)
+    assert dsa_app.playback_bar.time_label.text() == "00:20 / 00:30"
+    assert dsa_app.dsa_view.dsa_buffer.t0 is not None
+
+    overview.region.setRegion((-5.0, 5.0))
+    assert dsa_app.player.position == pytest.approx(5.0)
+
+
+def test_overview_shows_whole_dsa_and_rectangle_spans_visible_dsa(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=30)
+    dsa_app._play_eeg_file(str(path))
+    dsa_app.playback_bar.play_btn.click()
+    overview = dsa_app.playback_bar.overview
+
+    image = overview.image.image
+    assert image.shape[1] == len(dsa_app.dsa_view.freq_bins)
+    assert np.isfinite(image[-1]).all()  # precomputed up to the end of the recording
+
+    dsa_app._on_zoom_change(2.0)
+    left, right = overview.region.getRegion()
+    assert right == pytest.approx(dsa_app.player.position)
+    assert right - left == pytest.approx(120.0)
+
+
+def test_playback_bar_speed_buttons_change_player_and_eeg_speed(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=10)
+    dsa_app._play_eeg_file(str(path))
+    bar = dsa_app.playback_bar
+    assert bar.speed_label.text() == "1×"
+
+    bar.faster_btn.click()
+    bar.faster_btn.click()
+    assert dsa_app.player.speed == 4.0
+    assert dsa_app.eeg_view._sample_period == pytest.approx(1.0 / (4 * config.SAMPLE_RATE_HZ))
+    assert bar.speed_label.text() == "4×"
+
+    for _ in range(10):
+        bar.slower_btn.click()
+    assert dsa_app.player.speed == 0.25
+    assert bar.slower_btn.isEnabled() is False
+    assert bar.speed_label.text() == "0.25×"
+
+    dsa_app._play_eeg_file(str(path))  # a new file starts at normal speed
+    assert dsa_app.player.speed == 1.0
+
+
+def test_overview_hides_future_while_playing_and_shows_whole_dsa_when_paused(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=30)
+    dsa_app._play_eeg_file(str(path))
+    overview = dsa_app.playback_bar.overview
+    mask = overview.future_mask
+
+    # Playing: everything from the playhead to the end is covered.
+    assert overview.isVisible() is True
+    assert mask.isVisible() is True
+    assert mask.rect().left() == pytest.approx(dsa_app.player.position)
+    assert mask.rect().right() == pytest.approx(dsa_app.player.duration)
+
+    # Paused: the whole DSA, including future data, is shown.
+    dsa_app.playback_bar.play_btn.click()
+    assert dsa_app.player.is_playing is False
+    assert mask.isVisible() is False
+    dsa_app._seek_playback(12.0)
+    assert mask.isVisible() is False
+
+    # Playing again: the future is covered from the new playhead on.
+    dsa_app.playback_bar.play_btn.click()
+    assert mask.isVisible() is True
+    assert mask.rect().left() == pytest.approx(dsa_app.player.position, abs=0.5)
+    assert mask.rect().right() == pytest.approx(30.0)
+
+    # Finished: nothing left to hide, whole DSA shown.
+    dsa_app._on_playback_finished()
+    assert mask.isVisible() is False

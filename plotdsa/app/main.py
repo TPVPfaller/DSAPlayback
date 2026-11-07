@@ -6,7 +6,6 @@ EEG Density Spectral Array Viewer
 
 import os
 import sys
-import time
 import ctypes
 
 from PySide6.QtWidgets import (
@@ -17,8 +16,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QLabel,
     QFileDialog,
+    QInputDialog,
 )
-from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, QThread, QTimer, Qt
+from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPalette, QPixmap, QPolygon
 import qdarktheme
 import pyqtgraph as pg
@@ -27,25 +27,21 @@ if __package__ in (None, ""):
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from plotdsa.io.output import Output
-    from plotdsa.io.eeg_file import read_eeg_csv, compute_dsa_columns
+    from plotdsa.io.eeg_file import read_eeg_csv, compute_dsa_columns, is_single_column
     from plotdsa.app.player import EEGFilePlayer
     from plotdsa.config import UserConfig
     from plotdsa.ui.dsa_settings import SettingsDialog
+    from plotdsa.ui.playback_bar import PlaybackBar
     from plotdsa.ui.topbar import TopBar
-    from plotdsa.ui.time_selection import TimeSelectionDialog
-    from plotdsa.app.worker import ProcessingWorker
     from plotdsa.ui.views import DSAView, PSDView, EEGView
     from plotdsa import config
 else:
-    from ..io.output import Output
-    from ..io.eeg_file import read_eeg_csv, compute_dsa_columns
+    from ..io.eeg_file import read_eeg_csv, compute_dsa_columns, is_single_column
     from .player import EEGFilePlayer
     from ..config import UserConfig
     from ..ui.dsa_settings import SettingsDialog
+    from ..ui.playback_bar import PlaybackBar
     from ..ui.topbar import TopBar
-    from ..ui.time_selection import TimeSelectionDialog
-    from .worker import ProcessingWorker
     from ..ui.views import DSAView, PSDView, EEGView
     from .. import config
 
@@ -101,6 +97,7 @@ def _apply_windows_dark_titlebar(hwnd: int, red: int, green: int, blue: int):
 
 WINDOW_TITLE = "EEG Density Spectral Array"
 LAST_EEG_DIR_KEY = "last_eeg_file_dir"
+DEFAULT_SINGLE_COLUMN_RATE_HZ = 400.0
 EEG_FILE_DIR = "C:\\temp\\VSCaptureWave\\Entropy_Data"
 
 
@@ -117,13 +114,11 @@ def _create_play_icon(size=16):
 
 
 class DSAApplication(QMainWindow):
-    """Main application wiring together UI, processing thread and views."""
+    """Main application wiring together UI, EEG file playback and views."""
 
     def __init__(self):
         super().__init__()
-        self._closing = False
         self._themed_window_ids = set()
-        self._file_mode = False  # True while a loaded/played EEG file is shown instead of live data
         self._file_name = None
         self._settings = QSettings("PlotDSA", "PlotDSA")
 
@@ -134,8 +129,6 @@ class DSAApplication(QMainWindow):
         self.user_config = UserConfig()
         self._init_ui()
         self._init_player()
-        # self._load_previous_data()  # Removed: Don't load the data at the start only when set in the menu.
-        self._init_worker()
         self._init_timers()
         QApplication.instance().installEventFilter(self)
 
@@ -165,6 +158,9 @@ class DSAApplication(QMainWindow):
 
         self.topbar = TopBar(self.user_config, self._on_config_change, self._on_zoom_change, self.dsa_view.pan,
                              self.dsa_view.calibrate)
+        self.topbar.screenshot_widgets = lambda: [self.dsa_view, self.psd_view, self.eeg_view]
+        self.playback_bar = PlaybackBar()
+        self.playback_bar.hide()  # only shown while a file is played
         self._create_menu()
 
         container = QWidget()
@@ -174,18 +170,18 @@ class DSAApplication(QMainWindow):
 
         self.disclaimer_label = QLabel("Nur zu Lehrzwecken", self)
         self.disclaimer_label.setStyleSheet("color: red; font-weight: bold; font-size: 22px;")
-        self.disclaimer_label.setAlignment(
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
-        )
+        self.disclaimer_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.disclaimer_label.setFixedHeight(32)
 
         self.layout.addSpacing(23)
         self.layout.addWidget(self.topbar)
+        self.layout.addWidget(self.playback_bar)
         self.layout.addWidget(self.dsa_view)
         self.layout.addWidget(self.psd_view)
         self.layout.addWidget(self.eeg_view)
 
         self.layout.setStretchFactor(self.topbar, 0)
+        self.layout.setStretchFactor(self.playback_bar, 0)
         self.layout.setStretchFactor(self.dsa_view, 1)
         self.layout.setStretchFactor(self.psd_view, 1)
         self.layout.setStretchFactor(self.eeg_view, 1)
@@ -214,36 +210,16 @@ class DSAApplication(QMainWindow):
         if hasattr(self, "disclaimer_label"):
             self._position_disclaimer_label()
 
-    def _on_load_data_clicked(self):
-        dialog = TimeSelectionDialog(self)
-        if dialog.exec():
-            start_time = dialog.selected_datetime()
-            self._load_data_from_time(start_time)
-
-    def _load_data_from_time(self, start_time_dt):
-        try:
-            previous_data = Output.load_psd_from_time(start_time_dt)
-        except Exception as e:
-            self._show_message("Load Error", f"Failed to load data: {e}")
-            return
-
-        if not previous_data:
-            self._show_message("Load Data", "No data found for the selected time range.")
-            return
-
-        self.dsa_view.clear_data()
-        for ts, duration, psd in previous_data:
-            self._append_dsa_steps(ts, psd, max(1, int(round(duration / config.TIME_RESOLUTION))))
-
-        self.dsa_view.update()
-        self.dsa_view.jump_to_live()
-
     # ------------------ EEG file load / playback ------------------ #
     def _init_player(self):
         self.player = EEGFilePlayer(self.user_config, self)
         self.player.new_dsa_column.connect(self._on_file_dsa_column)
         self.player.new_samples.connect(self._on_file_samples)
         self.player.finished.connect(self._on_playback_finished)
+        self.player.position_changed.connect(self.playback_bar.set_position)
+        self.playback_bar.play_pause_clicked.connect(self._toggle_playback)
+        self.playback_bar.seek_requested.connect(self._seek_playback)
+        self.playback_bar.speed_changed.connect(self._set_playback_speed)
 
     def _on_open_eeg_file_clicked(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -295,11 +271,30 @@ class DSAApplication(QMainWindow):
             return "play"
         return None
 
+    def _ask_sample_rate(self, path):
+        """Return (ok, rate): asks for the sampling rate if the file has only a value column."""
+        if not is_single_column(path):
+            return True, None
+        rate, ok = QInputDialog.getDouble(
+            self,
+            "Sampling Rate",
+            "The file contains only one column.\nSampling rate (Hz):",
+            DEFAULT_SINGLE_COLUMN_RATE_HZ,
+            1.0,
+            100000.0,
+            0,  # whole Hz only, so no decimal separator is shown
+        )
+        return ok, rate
+
     def _load_eeg_file(self, path):
+        ok, sample_rate_hz = self._ask_sample_rate(path)
+        if not ok:
+            return False
         self.player.stop()
+        self.playback_bar.hide()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            timestamps, values = read_eeg_csv(path)
+            timestamps, values = read_eeg_csv(path, sample_rate_hz=sample_rate_hz)
             columns = compute_dsa_columns(timestamps, values, self.user_config)
         except Exception as e:
             QApplication.restoreOverrideCursor()
@@ -325,44 +320,97 @@ class DSAApplication(QMainWindow):
         return True
 
     def _play_eeg_file(self, path):
+        ok, sample_rate_hz = self._ask_sample_rate(path)
+        if not ok:
+            return False
         self.player.stop()
         try:
-            timestamps, values = read_eeg_csv(path)
+            timestamps, values = read_eeg_csv(path, sample_rate_hz=sample_rate_hz)
         except Exception as e:
             self._show_message("Load Error", f"Failed to load EEG file: {e}")
             return False
 
         self._enter_file_mode(path)
-        self.player.start(timestamps, values)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.player.start(timestamps, values)  # precomputes the whole DSA
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.playback_bar.set_speed(1.0)
+        self.playback_bar.set_duration(self.player.duration)
+        self.playback_bar.set_window_width(self.dsa_view._visible_width_sec())
+        self._update_overview()
+        self.playback_bar.set_playing(True)
+        self.playback_bar.show()
         self._set_title_status(f"Playing {self._file_name}")
         return True
 
+    def _toggle_playback(self):
+        if self.player.is_playing:
+            self.player.pause()
+            self._set_title_status(f"Paused {self._file_name}")
+        else:
+            self.player.resume()
+            self._set_title_status(f"Playing {self._file_name}")
+        self.playback_bar.set_playing(self.player.is_playing)
+
+    def _update_overview(self):
+        """Show the whole precomputed DSA in the playback bar, cropped like the main DSA."""
+        n_freq = len(self.dsa_view.freq_bins)
+        self.playback_bar.overview.set_dsa(
+            self.player.column_starts / config.SAMPLE_RATE_HZ,
+            [psd[:n_freq] for _, psd, _ in self.player.dsa_columns],
+            self.player.duration,
+            self.dsa_view.lut,
+            (self.user_config.psd_db_min, self.user_config.psd_db_max),
+        )
+
+    def _set_playback_speed(self, speed):
+        self.player.set_speed(speed)
+        self.eeg_view.set_playback_speed(speed)
+
+    def _seek_playback(self, seconds):
+        """Jump to `seconds` and rebuild the DSA up to there; the EEG sweep restarts."""
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            columns = self.player.seek(seconds)
+            self.dsa_view.clear_data()
+            self.eeg_view.clear_data()
+            for ts, psd, steps in columns:
+                self._append_dsa_steps(ts, psd, steps)
+            self.dsa_view.update()
+            self.dsa_view.jump_to_live()
+            if columns and self.psd_view.isVisible():
+                self.psd_view.update(columns[-1][1])
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def _enter_file_mode(self, path):
-        self._file_mode = True
         self._file_name = os.path.basename(path)
         self.dsa_view.clear_data()
         self.eeg_view.clear_data()
 
-    def _return_to_live(self):
+    def _clear_data(self):
         self.player.stop()
-        self._file_mode = False
+        self.playback_bar.hide()
         self._file_name = None
         self.dsa_view.clear_data()
         self.eeg_view.clear_data()
         self._set_title_status(None)
 
     def _on_playback_finished(self):
+        self.playback_bar.set_playing(False)
         self._set_title_status(f"Playback finished: {self._file_name}")
 
     def _set_title_status(self, status):
         self.setWindowTitle(f"{WINDOW_TITLE} - {status}" if status else WINDOW_TITLE)
 
     def _on_file_dsa_column(self, ts, psd, steps):
-        if self._file_mode:
+        if self.player.is_playing:
             self._show_dsa_column(ts, psd, steps)
 
     def _on_file_samples(self, samples):
-        if not self._file_mode or not self.eeg_view.isVisible():
+        if not self.player.is_playing or not self.eeg_view.isVisible():
             return
         for value in samples:
             self.eeg_view.append_sample(value)
@@ -413,20 +461,7 @@ class DSAApplication(QMainWindow):
             }}
         """)
 
-    def _init_worker(self):
-        self.thread = QThread()
-        self.worker = ProcessingWorker(self.user_config)
-        self.worker.moveToThread(self.thread)
-
-        self.thread.started.connect(self.worker.run)
-        self.worker.new_dsa_column.connect(self._on_new_dsa_column)
-        self.worker.new_samples.connect(self._on_new_samples)
-
-        self.thread.start()
-
     def _init_timers(self):
-        self._last_data_receive_time = time.time() - 2.0
-
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start(250)
@@ -452,10 +487,6 @@ class DSAApplication(QMainWindow):
         self.action_show_psd = self._create_toggle_action(view_menu, "Show PSD", False, self.psd_view)
         self.action_show_eeg = self._create_toggle_action(view_menu, "Show EEG", True, self.eeg_view)
 
-        action_load_data = QAction("Load Data from Time", self)
-        action_load_data.triggered.connect(self._on_load_data_clicked)
-        view_menu.addAction(action_load_data)
-
         action_open_eeg = QAction("Load EEG File (CSV)", self)
         action_open_eeg.triggered.connect(self._on_open_eeg_file_clicked)
         view_menu.addAction(action_open_eeg)
@@ -471,33 +502,16 @@ class DSAApplication(QMainWindow):
         action_info.triggered.connect(self._show_information)
         help_menu.addAction(action_info)
 
-        self.connection_indicator = QLabel()
-        self.connection_indicator.setFixedSize(12, 12)
-        self.connection_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.connection_indicator.setStyleSheet("""
-            QLabel { 
-            background-color: red; 
-            border: none; 
-            border-radius: 6px; 
-            padding: 0px 6px;
-            }
-        """)
-
-        self.connection_indicator.setToolTip("Disconnected")
-
-        # place it in top-right corner of menu bar
-        self.menuBar().setCornerWidget(self.connection_indicator, Qt.Corner.TopRightCorner)
-
     def _show_information(self):
         text = f"""
         <p style="font-size:12pt;">
-            - PSD files are saved in: <code>{config.BASE_DIR}</code>
+            - Open an EEG recording (CSV) via the View menu or by dropping it onto the DSA
         </p>
         <p style="font-size:12pt;">
             - Viewer supports up to <b>{int(config.DISPLAY_MINUTES_BOUNDS[1] / 60)} hours</b> of EEG data
         </p>
         <p style="font-size:12pt;">
-            - EEG should arrive at <b>{config.SAMPLE_RATE_HZ} Hz</b>
+            - EEG files should be sampled at <b>{config.SAMPLE_RATE_HZ} Hz</b>
         </p>
         <p style="font-size:12pt;">
             - More info: <a href="https://github.com/TPVPfaller/PlotDSA">GitHub</a>
@@ -508,13 +522,13 @@ class DSAApplication(QMainWindow):
     def _confirm_clear_data(self):
         reply = self._show_message(
             "Confirm data deletion",
-            "Are you sure you want to delete all EEG/DSA data?\nThe data can be reloaded with the 'Load Data from Time' menu item.",
+            "Are you sure you want to delete all EEG/DSA data?\nThe data can be reloaded by opening the EEG file again.",
             buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             default_button=QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            # Also stops a loaded/played EEG file and returns to live data.
-            self._return_to_live()
+            # Also stops a playing EEG file.
+            self._clear_data()
 
     def _toggle_multitaper(self, checked):
         new_config = self.user_config.update(use_multitaper=checked)
@@ -537,11 +551,6 @@ class DSAApplication(QMainWindow):
         dialog = SettingsDialog(self.user_config, self._on_config_change, self)
         dialog.exec()
 
-    def _on_new_dsa_column(self, ts, psd, steps):
-        if self._file_mode:
-            return
-        self._show_dsa_column(ts, psd, steps)
-
     def _show_dsa_column(self, ts, psd, steps):
         self._append_dsa_steps(ts, psd, steps)
         self.dsa_view.update()
@@ -549,42 +558,15 @@ class DSAApplication(QMainWindow):
         if self.psd_view.isVisible():
             self.psd_view.update(psd)
 
-    def _on_new_samples(self, samples):
-        if samples:
-            self._last_data_receive_time = time.time()
-        if self._file_mode or not self.eeg_view.isVisible():
-            return
-        for value in samples:
-            self.eeg_view.append_sample(value)
-
     def _update_status(self):
-        if time.time() - self._last_data_receive_time < 2.0:
-            self.connection_indicator.setStyleSheet("""
-            QLabel { 
-            background-color: green; 
-            border: none; 
-            border-radius: 6px; 
-            padding: 0px 6px;
-            }
-        """)
-            self.connection_indicator.setToolTip("Connected")
-        else:
-            self.connection_indicator.setStyleSheet("""
-            QLabel { 
-            background-color: red; 
-            border: none; 
-            border-radius: 6px; 
-            padding: 0px 6px;
-             }
-        """)
-            self.connection_indicator.setToolTip("Disconnected")
-
         self.topbar.update_jump_live_btn(self.dsa_view)
 
     def _on_zoom_change(self, display_minutes):
         self.topbar.sync_slider(display_minutes)
         self.topbar.update_jump_live_btn(self.dsa_view)
         self.dsa_view.apply_zoom(display_minutes)
+        if hasattr(self, "playback_bar"):
+            self.playback_bar.set_window_width(display_minutes * 60.0)
 
     def _on_config_change(self, new_config):
         self.user_config = new_config
@@ -595,48 +577,22 @@ class DSAApplication(QMainWindow):
             self.action_multitaper.blockSignals(False)
 
         self.topbar.apply_config(new_config)
-        self.worker.apply_config(new_config)
-        if hasattr(self, "player"):
-            self.player.apply_config(new_config)
+        dsa_recomputed = hasattr(self, "player") and self.player.apply_config(new_config)
         self.dsa_view.apply_config(new_config)
         self.psd_view.apply_config(new_config)
         self.eeg_view.apply_config(new_config)
+        if hasattr(self, "playback_bar") and self.playback_bar.isVisibleTo(self):
+            self._update_overview()
+            if dsa_recomputed:
+                self._seek_playback(self.player.position)
 
         self._update_status()
 
-    def _thread_is_running(self):
-        return bool(getattr(self.thread, "isRunning", lambda: False)())
-
-    def _finish_close_when_worker_stops(self):
-        if not self._closing:
-            return
-        if self._thread_is_running():
-            QTimer.singleShot(50, self._finish_close_when_worker_stops)
-            return
-        self.close()
-
     def closeEvent(self, event):
-        if self._closing:
-            if self._thread_is_running():
-                event.ignore()
-            else:
-                event.accept()
-            return
-
-        self._closing = True
         if hasattr(self, "status_timer"):
             self.status_timer.stop()
         if hasattr(self, "player"):
             self.player.stop()
-        self.setEnabled(False)
-        self.worker.stop()
-        self.thread.quit()
-
-        if self._thread_is_running():
-            event.ignore()
-            QTimer.singleShot(50, self._finish_close_when_worker_stops)
-            return
-
         event.accept()
 
 

@@ -46,7 +46,8 @@ class EEGView(pg.PlotWidget):
         self.setMouseEnabled(False, False)
         self.setInteractive(False)
 
-        self.curve_a = self.plot(pen=pg.mkPen((0, 200, 255), width=1))
+        # Antialiasing smooths only the drawn line; every sample is still plotted (ds=1).
+        self.curve_a = self.plot(pen=pg.mkPen((0, 200, 255), width=1), antialias=True)
         self.missing_curve_a = self.plot(pen=pg.mkPen((255, 80, 80), width=2))
         self.missing_curve_a.setDownsampling(auto=False, ds=1, method="subsample")
 
@@ -84,11 +85,10 @@ class EEGView(pg.PlotWidget):
         self._timer.start(int(1000 / self.RENDER_HZ))
 
     def _init_settings_controls(self):
-        from PySide6.QtWidgets import QApplication, QFrame, QLabel, QStyle, QToolButton, QVBoxLayout
+        from PySide6.QtWidgets import QApplication, QFrame, QLabel, QToolButton, QVBoxLayout
 
         self.sweep_buttons = {}
         self.amplitude_buttons = {}
-        self.is_paused = False
         self._app_event_filter_installed = False
 
         self.settings_button = QToolButton(self.viewport())
@@ -109,30 +109,6 @@ class EEGView(pg.PlotWidget):
         """
         )
         self.settings_button.clicked.connect(self._toggle_settings_popup)
-
-        self.pause_button = QToolButton(self.viewport())
-        self.pause_button.setCursor(Qt.PointingHandCursor)
-        self.pause_button.setCheckable(True)
-        self.pause_button.setFixedSize(32, 32)
-        self.pause_button.setStyleSheet(
-            """
-            QToolButton {
-                background-color: rgba(60, 60, 60, 170);
-                border: 1px solid rgba(255, 255, 255, 45);
-                border-radius: 16px;
-            }
-            QToolButton:pressed {
-                background-color: rgba(100, 100, 100, 255);
-            }
-            QToolButton:checked {
-                background-color: rgba(0, 150, 220, 220);
-            }
-        """
-        )
-        self.pause_button.clicked.connect(self._toggle_pause)
-        self._pause_icon = self.style().standardIcon(QStyle.SP_MediaPause)
-        self._play_icon = self.style().standardIcon(QStyle.SP_MediaPlay)
-        self._sync_pause_button()
 
         self.settings_popup = QFrame(self.viewport())
         self.settings_popup.setObjectName("eegSettingsPopup")
@@ -232,12 +208,6 @@ class EEGView(pg.PlotWidget):
         popup_y = max(0, self.settings_button.y())
         self.settings_popup.move(popup_x, popup_y)
 
-    def _toggle_pause(self):
-        self.is_paused = not self.is_paused
-        if self.is_paused:
-            self._pending.clear()
-        self._sync_pause_button()
-
     def _init_view_filter(self):
         self._view_filter = DSACalculator(self.user_config.window_sec)
         self._view_filter_b = np.asarray(self._view_filter.bp_b, dtype=np.float32)
@@ -248,22 +218,12 @@ class EEGView(pg.PlotWidget):
         self._view_filter_zi = np.zeros(len(self._view_filter_b) - 1, dtype=np.float32)
         self._view_filter_settle_remaining = self._view_filter_settle_samples
 
-    def _sync_pause_button(self):
-        self.pause_button.blockSignals(True)
-        self.pause_button.setChecked(self.is_paused)
-        self.pause_button.setIcon(self._play_icon if self.is_paused else self._pause_icon)
-        self.pause_button.setIconSize(QSize(18, 18))
-        self.pause_button.setToolTip("Resume EEG" if self.is_paused else "Pause EEG")
-        self.pause_button.blockSignals(False)
-
     def _update_settings_button_pos(self):
         if not hasattr(self, "settings_button"):
             return
 
         x = max(0, self.viewport().width() - self.settings_button.width() - 12)
         self.settings_button.move(x, 8)
-        if hasattr(self, "pause_button"):
-            self.pause_button.move(x, self.settings_button.y() + self.settings_button.height() + 6)
         if self.settings_popup.isVisible():
             self._position_settings_popup()
 
@@ -284,10 +244,8 @@ class EEGView(pg.PlotWidget):
         return (
             target is self.settings_popup
             or target is self.settings_button
-            or target is self.pause_button
             or self.settings_popup.isAncestorOf(target)
             or self.settings_button.isAncestorOf(target)
-            or self.pause_button.isAncestorOf(target)
         )
 
     def _apply_y_range(self):
@@ -448,8 +406,12 @@ class EEGView(pg.PlotWidget):
         self._sync_amplitude_buttons()
         self._update_time_scale()
 
+    def set_playback_speed(self, speed):
+        """Show incoming samples `speed` times faster than real time."""
+        self._sample_period = 1.0 / (config.SAMPLE_RATE_HZ * speed)
+
     def append_sample(self, val):
-        if val is None or self.is_paused:
+        if val is None:
             return
 
         sample = float(val)

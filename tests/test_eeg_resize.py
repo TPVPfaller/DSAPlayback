@@ -101,61 +101,6 @@ def test_plot_axes_use_white_larger_text(app):
     assert_axis_style(eeg.getAxis("bottom"), has_label=True)
 
 
-def test_pause_button_sits_under_settings_and_blocks_samples(app, qtbot):
-    view = EEGView(UserConfig())
-    qtbot.addWidget(view)
-    view.resize(500, 220)
-    view.show()
-
-    view._update_settings_button_pos()
-
-    assert view.pause_button.x() == view.settings_button.x()
-    assert view.pause_button.y() > view.settings_button.y()
-    assert view.is_paused is False
-
-    view.pause_button.click()
-
-    assert view.is_paused is True
-    assert len(view._pending) == 0
-
-    view.append_sample(1.0)
-    assert len(view._pending) == 0
-    assert len(view.history) == 0
-
-    view.pause_button.click()
-
-    assert view.is_paused is False
-    view.append_sample(2.0)
-    assert len(view._pending) == 1
-
-
-def test_resuming_eeg_keeps_sweep_position_while_refreshing_latest_samples(app, qtbot):
-    view = EEGView(UserConfig())
-    qtbot.addWidget(view)
-
-    view.append_sample(10.0)
-    view._pending[0] = (time.perf_counter() - 1.0, 10.0)
-    view._render_frame_stable()
-    initial_head = view.display_head
-
-    view.pause_button.click()
-    for value in (20.0, 30.0, 40.0):
-        view.append_sample(value)
-
-    assert view.display_head == initial_head
-    assert len(view._pending) == 0
-
-    view.pause_button.click()
-
-    assert view.is_paused is False
-    assert view.display_head == initial_head
-    assert view.display[view.display_head] == 10.0
-    assert np.count_nonzero(~np.isnan(view.display)) == 1
-
-    view.append_sample(50.0)
-    assert len(view._pending) == 1
-
-
 def test_dsa_calibrate_emits_python_int_config_values(app, qtbot, monkeypatch):
     emitted = []
     view = DSAView(UserConfig(), emitted.append, lambda _: None)
