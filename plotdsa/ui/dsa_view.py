@@ -648,12 +648,16 @@ class DSAView(pg.GraphicsLayoutWidget):
 
     def wheelEvent(self, ev):
         """Wheel up zooms in (shorter time span), wheel down zooms out."""
-        notches = ev.angleDelta().y() / 120.0
+        self.wheel_zoom(ev.angleDelta().y())
+        ev.accept()  # never let the wheel scroll the view
+
+    def wheel_zoom(self, angle_delta_y):
+        """Zoom the time span by one WHEEL_ZOOM_STEP per wheel notch (120 units)."""
+        notches = angle_delta_y / 120.0
         if notches:
             new_minutes = self.display_minutes / (self.WHEEL_ZOOM_STEP ** notches)
             min_m, max_m = config.DISPLAY_MINUTES_BOUNDS
             self.on_zoom_change(float(np.clip(new_minutes, min_m, max_m)))
-        ev.accept()  # never let the wheel scroll the view
 
     def apply_zoom(self, new_minutes):
         if new_minutes is not None:

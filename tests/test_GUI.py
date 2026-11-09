@@ -600,3 +600,11 @@ def test_mouse_wheel_steps_eeg_y_range_presets(dsa_app):
 
     _wheel(view, 120)
     assert dsa_app.user_config.eeg_uv_range_max == options[-2]
+
+
+def test_mouse_wheel_on_playback_timeline_zooms_dsa(dsa_app):
+    start = dsa_app.dsa_view.display_minutes
+    event = _wheel(dsa_app.playback_bar.overview, 120)
+    assert event.isAccepted()
+    assert dsa_app.dsa_view.display_minutes == pytest.approx(start / dsa_app.dsa_view.WHEEL_ZOOM_STEP)
+    assert dsa_app.playback_bar._window_width == pytest.approx(dsa_app.dsa_view.display_minutes * 60.0)

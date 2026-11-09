@@ -55,6 +55,7 @@ class DSAOverview(pg.PlotWidget):
 
     seek_requested = Signal(float)  # playhead position in seconds
     position_previewed = Signal(float)  # playhead while the rectangle is dragged
+    wheel_zoom_requested = Signal(int)  # vertical wheel angle delta, forwarded to the DSA zoom
 
     def __init__(self, parent=None):
         super().__init__(parent, background="k")
@@ -142,3 +143,8 @@ class DSAOverview(pg.PlotWidget):
             return
         x = self.getPlotItem().vb.mapSceneToView(event.scenePos()).x()
         self.seek_requested.emit(min(max(x, 0.0), self._duration))
+
+    def wheelEvent(self, event):
+        """Zoom the main DSA (and so this rectangle) instead of scrolling the overview."""
+        self.wheel_zoom_requested.emit(event.angleDelta().y())
+        event.accept()
