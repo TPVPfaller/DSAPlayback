@@ -629,3 +629,68 @@ def test_mouse_wheel_on_playback_timeline_zooms_dsa(dsa_app):
     assert event.isAccepted()
     assert dsa_app.dsa_view.display_minutes == pytest.approx(start / dsa_app.dsa_view.WHEEL_ZOOM_STEP)
     assert dsa_app.playback_bar._window_width == pytest.approx(dsa_app.dsa_view.display_minutes * 60.0)
+
+
+def _write_multi_channel_csv(path, n_channels, seconds=10):
+    rate = config.SAMPLE_RATE_HZ
+    t = np.arange(int(seconds * rate)) / rate
+    lines = ["time," + ",".join(f"EEG{ch + 1}" for ch in range(n_channels))]
+    for ti in t:
+        values = [50 * np.sin(2 * np.pi * (8 + ch) * ti) for ch in range(n_channels)]
+        lines.append(f"{ti:.4f}," + ",".join(f"{v:.3f}" for v in values))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _grid_position(grid, view):
+    layout = grid.layout()
+    row, col, _, _ = layout.getItemPosition(layout.indexOf(view))
+    return row, col
+
+
+def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "eeg.csv"
+    _write_multi_channel_csv(path, 3)
+
+    assert dsa_app._load_eeg_file(str(path)) is True
+
+    dsa_views = [dsa_app.dsa_view] + dsa_app.extra_dsa_views
+    eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    assert len(dsa_views) == len(eeg_views) == 3
+    # 3 channels: 2 columns, 2 rows in each grid.
+    assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (0, 1), (1, 0)]
+    assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (0, 1), (1, 0)]
+    qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_views + eeg_views), timeout=2000)
+    assert dsa_app.dsa_grid.geometry().bottom() < dsa_app.eeg_grid.geometry().top()
+    assert [v.plot.titleLabel.text for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
+    assert all(v.dsa_buffer.t0 is not None for v in dsa_views)
+
+    # Zoom and pan apply to every DSA.
+    dsa_app._on_zoom_change(0.05)
+    dsa_app.dsa_view.pan(-0.5)
+    for view in dsa_app.extra_dsa_views:
+        assert view.display_minutes == pytest.approx(0.05)
+        assert view.live_mode is False
+        assert view.t0 == pytest.approx(dsa_app.dsa_view.t0)
+
+    dsa_app.action_show_eeg.trigger()
+    assert not any(v.isVisible() for v in eeg_views)
+    dsa_app.action_show_eeg.trigger()
+
+    dsa_app._clear_data()
+    assert dsa_app.extra_dsa_views == [] and dsa_app.extra_eeg_views == []
+    assert dsa_app.dsa_view.minimumHeight() == config.MIN_DSA_HEIGHT
+
+
+def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "eeg.csv"
+    _write_multi_channel_csv(path, 2, seconds=4)
+
+    assert dsa_app._play_eeg_file(str(path)) is True
+    dsa_app._toggle_playback()  # pause
+    dsa_app._seek_playback(3.5)
+
+    assert len(dsa_app.extra_dsa_views) == 1
+    assert dsa_app.extra_dsa_views[0].dsa_buffer.t0 is not None
+    dsa_app._toggle_playback()  # resume
+    qtbot.waitUntil(lambda: len(dsa_app.extra_eeg_views[0]._pending) > 0
+                    or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
