@@ -497,6 +497,27 @@ def test_overview_shows_whole_dsa_and_rectangle_spans_visible_dsa(dsa_app, tmp_p
     assert right - left == pytest.approx(120.0)
 
 
+def test_overview_rectangle_follows_panned_dsa(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=30)
+    dsa_app._play_eeg_file(str(path))
+    dsa_app.playback_bar.play_btn.click()
+    dsa_app._seek_playback(30.0)
+    dsa_app._on_zoom_change(0.25)
+    overview = dsa_app.playback_bar.overview
+
+    dsa_app.dsa_view.pan(-0.5)
+    left, right = overview.region.getRegion()
+    view_end = dsa_app.dsa_view.t0 + 15.0 - dsa_app._file_t0
+    assert right == pytest.approx(view_end)
+    assert right < dsa_app.player.position - 5.0
+    assert right - left == pytest.approx(15.0)
+    assert overview.future_mask.rect().left() == pytest.approx(dsa_app.player.position)
+
+    dsa_app.dsa_view.jump_to_live()
+    assert overview.region.getRegion()[1] == pytest.approx(dsa_app.player.position)
+
+
 def test_playback_bar_speed_buttons_change_player_and_eeg_speed(dsa_app, tmp_path):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path, seconds=10)

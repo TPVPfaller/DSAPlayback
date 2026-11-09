@@ -161,6 +161,8 @@ class DSAApplication(QMainWindow):
         self.topbar.screenshot_widgets = lambda: [self.dsa_view, self.psd_view, self.eeg_view]
         self.playback_bar = PlaybackBar()
         self.playback_bar.hide()  # only shown while a file is played
+        self._file_t0 = 0.0  # timestamp of the first sample of the played file
+        self.dsa_view.view_changed.connect(self._sync_overview_to_dsa)
         self._create_menu()
 
         container = QWidget()
@@ -331,6 +333,7 @@ class DSAApplication(QMainWindow):
             return False
 
         self._enter_file_mode(path)
+        self._file_t0 = float(timestamps[0])
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self.player.start(timestamps, values)  # precomputes the whole DSA
@@ -364,6 +367,10 @@ class DSAApplication(QMainWindow):
             self.dsa_view.lut,
             (self.user_config.psd_db_min, self.user_config.psd_db_max),
         )
+
+    def _sync_overview_to_dsa(self, start, end):
+        """Keep the overview rectangle on the time span shown in the main DSA while it is panned."""
+        self.playback_bar.set_view_end(None if self.dsa_view.live_mode else end - self._file_t0)
 
     def _set_playback_speed(self, speed):
         self.player.set_speed(speed)
