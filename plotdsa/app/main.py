@@ -222,6 +222,7 @@ class DSAApplication(QMainWindow):
         self.playback_bar.play_pause_clicked.connect(self._toggle_playback)
         self.playback_bar.seek_requested.connect(self._seek_playback)
         self.playback_bar.speed_changed.connect(self._set_playback_speed)
+        self.playback_bar.overview.wheel_zoom_requested.connect(self.dsa_view.wheel_zoom)
 
     def _on_open_eeg_file_clicked(self):
         path, _ = QFileDialog.getOpenFileName(

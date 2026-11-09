@@ -570,3 +570,62 @@ def test_overview_hides_future_while_playing_and_shows_whole_dsa_when_paused(dsa
     # Finished: nothing left to hide, whole DSA shown.
     dsa_app._on_playback_finished()
     assert mask.isVisible() is False
+
+
+def _wheel(widget, delta_y):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    pos = QPointF(widget.width() / 2, widget.height() / 2)
+    event = QWheelEvent(pos, QPointF(widget.mapToGlobal(pos.toPoint())), QPoint(0, 0), QPoint(0, delta_y),
+                        Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    widget.wheelEvent(event)
+    return event
+
+
+def test_mouse_wheel_zooms_dsa_and_syncs_zoom_slider(dsa_app):
+    start = dsa_app.dsa_view.display_minutes
+    slider_start = dsa_app.topbar.zoom_slider.value()
+
+    event = _wheel(dsa_app.dsa_view, 120)
+    assert event.isAccepted()
+    assert dsa_app.dsa_view.display_minutes == pytest.approx(start / dsa_app.dsa_view.WHEEL_ZOOM_STEP)
+    assert dsa_app.topbar.zoom_slider.value() != slider_start
+
+    _wheel(dsa_app.dsa_view, -120)
+    assert dsa_app.dsa_view.display_minutes == pytest.approx(start)
+
+    for _ in range(50):
+        _wheel(dsa_app.dsa_view, 120)
+    assert dsa_app.dsa_view.display_minutes == pytest.approx(config.DISPLAY_MINUTES_BOUNDS[0])
+
+
+def test_mouse_wheel_steps_eeg_y_range_presets(dsa_app):
+    options = config.EEG_Y_RANGE_OPTIONS
+    view = dsa_app.eeg_view
+    assert view.user_config.eeg_uv_range_max == options[0]
+
+    _wheel(view, 120)  # already at the smallest range
+    assert dsa_app.user_config.eeg_uv_range_max == options[0]
+
+    _wheel(view, -60)  # half a notch (trackpad) does nothing yet
+    assert dsa_app.user_config.eeg_uv_range_max == options[0]
+    event = _wheel(view, -60)
+    assert event.isAccepted()
+    assert dsa_app.user_config.eeg_uv_range_max == options[1]
+    assert view.getViewBox().viewRange()[1] == pytest.approx([-options[1], options[1]])
+
+    for _ in range(5):
+        _wheel(view, -120)
+    assert dsa_app.user_config.eeg_uv_range_max == options[-1]
+
+    _wheel(view, 120)
+    assert dsa_app.user_config.eeg_uv_range_max == options[-2]
+
+
+def test_mouse_wheel_on_playback_timeline_zooms_dsa(dsa_app):
+    start = dsa_app.dsa_view.display_minutes
+    event = _wheel(dsa_app.playback_bar.overview, 120)
+    assert event.isAccepted()
+    assert dsa_app.dsa_view.display_minutes == pytest.approx(start / dsa_app.dsa_view.WHEEL_ZOOM_STEP)
+    assert dsa_app.playback_bar._window_width == pytest.approx(dsa_app.dsa_view.display_minutes * 60.0)
