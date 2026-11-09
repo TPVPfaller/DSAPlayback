@@ -25,6 +25,9 @@ class EEGFilePlayer(QObject):
     new_samples = Signal(object)  # list of eeg values
     position_changed = Signal(float)  # seconds since recording start
     finished = Signal()
+    # Channels after the first of a multi-channel recording: (channel index, ...)
+    new_extra_dsa_column = Signal(int, float, object, int)  # channel, timestamp, psd, steps
+    new_extra_samples = Signal(int, object)  # channel, list of eeg values
 
     TICK_MS = 50
 
@@ -42,15 +45,20 @@ class EEGFilePlayer(QObject):
         self.column_starts = np.empty(0, dtype=np.int64)  # first sample index of each column
         self._column_ready = np.empty(0, dtype=np.int64)  # samples played before a column is shown
         self._next_column = 0
+        # Per extra channel (index 1, 2, ...): values, columns, ready sample counts, next column.
+        self._extra = {}
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.TICK_MS)
         self._timer.timeout.connect(self._tick)
 
     def start(self, timestamps, values):
+        """values: one channel (n_samples,) or several channels (n_channels, n_samples)."""
         self.stop()
         self._timestamps = np.asarray(timestamps, dtype=np.float64)
-        self._values = np.asarray(values, dtype=np.float64)
+        channels = np.atleast_2d(np.asarray(values, dtype=np.float64))
+        self._values = channels[0]
+        self._extra = {ch: {"values": channels[ch]} for ch in range(1, len(channels))}
         self._pos = 0
         self._compute_columns()
         self._next_column = 0
@@ -94,9 +102,23 @@ class EEGFilePlayer(QObject):
         """
         self._pos = int(min(max(seconds, 0.0), self.duration) * config.SAMPLE_RATE_HZ)
         self._next_column = int(np.searchsorted(self._column_ready, self._pos, side="right"))
+        self._sync_extra_next_columns()
         self._reset_anchor()
         self.position_changed.emit(self.position)
         return self.dsa_columns[:self._next_column]
+
+    @property
+    def extra_channels(self):
+        return sorted(self._extra)
+
+    def extra_columns_played(self, channel):
+        """DSA columns [(ts, psd, steps)] of an extra channel up to the current position."""
+        extra = self._extra[channel]
+        return extra["columns"][:extra["next"]]
+
+    def _sync_extra_next_columns(self):
+        for extra in self._extra.values():
+            extra["next"] = int(np.searchsorted(extra["ready"], self._pos, side="right"))
 
     def apply_config(self, user_config):
         """Returns True if the DSA columns were recomputed (DSA settings changed)."""
@@ -109,13 +131,21 @@ class EEGFilePlayer(QObject):
         ):
             self._compute_columns()
             self._next_column = int(np.searchsorted(self._column_ready, self._pos, side="right"))
+            self._sync_extra_next_columns()
             return True
         return False
 
     def _compute_columns(self):
+        self.dsa_columns, self.column_starts, self._column_ready = self._channel_columns(self._values)
+        for extra in self._extra.values():
+            extra["columns"], _, extra["ready"] = self._channel_columns(extra["values"])
+            extra["next"] = 0
+
+    def _channel_columns(self, values):
+        """Return (columns, first sample index of each column, samples played before each is shown)."""
         eeg_buffer = EEGBuffer(self.user_config.window_sec, self.user_config.window_overlap)
         hop_sec = eeg_buffer.hop_len / config.SAMPLE_RATE_HZ
-        samples = list(zip(self._timestamps.tolist(), self._values.tolist()))
+        samples = list(zip(self._timestamps.tolist(), values.tolist()))
         columns, starts = [], []
         for ts, psd in eeg_buffer.get_dsa_columns(samples, method=_method(self.user_config)):
             if psd is None:
@@ -123,10 +153,9 @@ class EEGFilePlayer(QObject):
             snapped_ts, steps = snap_dsa_column(ts, hop_sec)
             columns.append((snapped_ts, psd, steps))
             starts.append(int(np.searchsorted(self._timestamps, ts)))
-        self.dsa_columns = columns
-        self.column_starts = np.asarray(starts, dtype=np.int64)
+        starts = np.asarray(starts, dtype=np.int64)
         # A window is complete once its last sample has been played.
-        self._column_ready = self.column_starts + eeg_buffer.window_len
+        return columns, starts, starts + eeg_buffer.window_len
 
     def _reset_anchor(self):
         self._anchor_pos = self._pos
@@ -146,6 +175,13 @@ class EEGFilePlayer(QObject):
             self.finished.emit()
 
     def _emit_chunk(self, start, end):
+        # Extra channels first, so their data is in place when channel 1 redraws the views.
+        for channel, extra in sorted(self._extra.items()):
+            self.new_extra_samples.emit(channel, extra["values"][start:end].tolist())
+            while extra["next"] < len(extra["columns"]) and extra["ready"][extra["next"]] <= end:
+                self.new_extra_dsa_column.emit(channel, *extra["columns"][extra["next"]])
+                extra["next"] += 1
+
         self.new_samples.emit(self._values[start:end].tolist())
 
         while self._next_column < len(self.dsa_columns) and self._column_ready[self._next_column] <= end:
