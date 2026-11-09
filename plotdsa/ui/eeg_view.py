@@ -372,6 +372,19 @@ class EEGView(pg.PlotWidget):
             dtype=np.float32,
         )
 
+    def wheelEvent(self, event):
+        """Step through the Y-range presets: wheel up zooms in (smaller range), wheel down zooms out."""
+        self._wheel_delta = getattr(self, "_wheel_delta", 0) + event.angleDelta().y()
+        if abs(self._wheel_delta) >= 120:
+            options = config.EEG_Y_RANGE_OPTIONS
+            current = self.user_config.eeg_uv_range_max
+            index = options.index(current) if current in options else 0
+            step = -1 if self._wheel_delta > 0 else 1
+            self._wheel_delta = 0
+            new_index = min(max(index + step, 0), len(options) - 1)
+            self._set_eeg_y_max(options[new_index])
+        event.accept()  # never let the wheel scroll the view
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_time_scale()
