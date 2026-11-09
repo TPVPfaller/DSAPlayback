@@ -371,7 +371,10 @@ class DSAApplication(QMainWindow):
 
     def _sync_overview_to_dsa(self, start, end):
         """Keep the overview rectangle on the time span shown in the main DSA while it is panned."""
-        self.playback_bar.set_view_end(None if self.dsa_view.live_mode else end - self._file_t0)
+        end_sec = end - self._file_t0
+        # A DSA shorter than its window ends at the playhead even when the view reaches past it.
+        follow_playhead = self.dsa_view.live_mode or end_sec >= self.player.position
+        self.playback_bar.set_view_end(None if follow_playhead else end_sec)
 
     def _set_playback_speed(self, speed):
         self.player.set_speed(speed)
