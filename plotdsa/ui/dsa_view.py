@@ -58,6 +58,7 @@ class DSAView(pg.GraphicsLayoutWidget):
     """Dynamic Spectrum Analysis display with live/pan and pinch-zoom support."""
 
     eeg_file_dropped = Signal(str)  # path of a raw EEG .csv file dropped onto the view
+    view_changed = Signal(float, float)  # (start, end) timestamps of the visible time span
 
     def __init__(self, user_config, on_config_change, on_zoom_change):
         super().__init__()
@@ -513,6 +514,7 @@ class DSAView(pg.GraphicsLayoutWidget):
         self.image.setImage(data, nan_policy="omit", autoLevels=False)
         self.image.setRect((self.t0, config.LOWEST_FREQ_HZ, actual_res * data.shape[0], self.user_config.max_freq_hz))
         self.plot.setXRange(self.t0, self.t0 + visible_width_sec, padding=0)
+        self.view_changed.emit(self.t0, self.t0 + visible_width_sec)
 
     # Triggered by the calibrate button
     def calibrate(self):

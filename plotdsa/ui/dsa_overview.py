@@ -114,15 +114,19 @@ class DSAOverview(pg.PlotWidget):
     def set_levels(self, levels):
         self.image.setLevels(levels)
 
-    def set_window(self, position, width):
-        """Place the rectangle so it spans `width` seconds ending at `position`."""
+    def set_window(self, position, width, end=None):
+        """
+        Place the rectangle so it spans `width` seconds ending at `end`
+        (default: the playhead `position`).
+        """
         self._width = max(float(width), 0.0)
         self._position = float(position)
         self._update_mask()
         if self.region.moving:
             return  # the user is dragging it
+        end = self._position if end is None else float(end)
         self.region.blockSignals(True)
-        self.region.setRegion((position - self._width, position))
+        self.region.setRegion((end - self._width, end))
         self.region.blockSignals(False)
 
     def _update_mask(self):

@@ -45,6 +45,7 @@ class PlaybackBar(QWidget):
         self._duration = 0.0
         self._position = 0.0
         self._window_width = 0.0
+        self._view_end = None  # right edge of the main DSA when panned away from the playhead
         self.speed = 1.0
 
         layout = QHBoxLayout(self)
@@ -107,11 +108,16 @@ class PlaybackBar(QWidget):
     def set_window_width(self, seconds):
         """Width of the overview rectangle: the time span visible in the main DSA."""
         self._window_width = max(float(seconds), 0.0)
-        self.overview.set_window(self._position, self._window_width)
+        self.overview.set_window(self._position, self._window_width, self._view_end)
+
+    def set_view_end(self, seconds):
+        """Move the overview rectangle to end at `seconds`; None keeps it on the playhead."""
+        self._view_end = seconds
+        self.overview.set_window(self._position, self._window_width, self._view_end)
 
     def set_position(self, seconds):
         self._position = min(max(float(seconds), 0.0), self._duration)
-        self.overview.set_window(self._position, self._window_width)
+        self.overview.set_window(self._position, self._window_width, self._view_end)
         if not self.overview.region.moving:
             self._update_label(self._position)
 
