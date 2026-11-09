@@ -1,6 +1,8 @@
 ﻿# PlotDSA - EEG Density Spectral Array (DSA) Viewer
 
-DSAPlayback is the playback version of PlotDSA: a PySide6 application that visualizes recorded EEG data from CSV files, featuring a Density Spectral Array (DSA) heatmap and raw EEG trace.
+DSAPlayback is the playback version of PlotDSA: a PySide6 application that visualizes 
+recorded EEG data from CSV files, featuring a Density Spectral Array (DSA) heatmap 
+and raw EEG trace.
 
 ## Quick Start
 ```powershell
@@ -30,8 +32,6 @@ python -m plotdsa.app.main
   - DSA Color Mapping
   - Maximum Frequency
   - EEG Sweep Speed
-- **Execution**: Start-DSA-Layout.cmd launches the application with AnesthesiaUI. DSA.exe and VSCaptureWave.exe should
-be located in C:\temp\VSCaptureWave. 
 
 ## Development
 - **Requirements**: Python 3.11, Windows 10 (primary target).
@@ -55,6 +55,6 @@ python -m nuitka --onefile --standalone `
   --windows-product-version=1.0.0.0 `
   --windows-file-version=1.0.0.0 `
   --file-description="EEG Density Spectral Array Viewer" `
-  --output-filename=DSA.exe `
+  --output-filename=DSA_Playback.exe `
   plotdsa\app\main.py
 ```
