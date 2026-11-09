@@ -518,6 +518,24 @@ def test_overview_rectangle_follows_panned_dsa(dsa_app, tmp_path):
     assert overview.region.getRegion()[1] == pytest.approx(dsa_app.player.position)
 
 
+def test_overview_rectangle_keeps_size_when_dragging_short_dsa(dsa_app, tmp_path):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path, seconds=30)
+    dsa_app._play_eeg_file(str(path))
+    dsa_app.playback_bar.play_btn.click()
+    dsa_app._seek_playback(20.0)
+    dsa_app._on_zoom_change(1.0)  # 60 s window, only 20 s of DSA: black space on the right
+    overview = dsa_app.playback_bar.overview
+    before = overview.region.getRegion()
+
+    dsa_app.dsa_view._dragging = True  # mid-drag the view stays out of live mode
+    dsa_app.dsa_view.live_mode = False
+    dsa_app.dsa_view.update()
+
+    assert overview.region.getRegion() == pytest.approx(before)
+    assert before[1] == pytest.approx(dsa_app.player.position)
+
+
 def test_playback_bar_speed_buttons_change_player_and_eeg_speed(dsa_app, tmp_path):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path, seconds=10)
