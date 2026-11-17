@@ -794,3 +794,19 @@ def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tm
         boxes = [p.getViewBox().sceneBoundingRect() for p in plot_items]
         assert abs(boxes[0].width() - boxes[1].width()) <= 2
         assert abs(boxes[0].height() - boxes[1].height()) <= 1
+
+
+def test_eeg_settings_popup_in_grid_is_not_clipped_by_its_cell(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "four.csv"
+    _write_multi_channel_csv(path, 4, seconds=4)
+    assert dsa_app._load_eeg_file(str(path)) is True
+    views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    qtbot.waitUntil(lambda: all(v.isVisible() for v in views), timeout=2000)
+
+    gear_view = next(v for v in views if v.settings_button.isVisibleTo(v))
+    gear_view._toggle_settings_popup()
+
+    popup = gear_view.settings_popup
+    assert popup.isVisible()
+    assert popup.parentWidget() is dsa_app  # floats over the neighbouring views
+    assert dsa_app.rect().contains(popup.geometry())

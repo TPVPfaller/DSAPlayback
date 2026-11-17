@@ -4,7 +4,7 @@ from collections import deque
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph import GridItem
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
 from scipy.signal import lfilter
 
 from .. import config
@@ -202,10 +202,20 @@ class EEGView(pg.PlotWidget):
         self.settings_popup.show()
         self.settings_popup.raise_()
 
+    def set_popup_parent(self, parent=None):
+        """
+        Show the settings popup in `parent` (e.g. the main window, so that it is not cut off
+        by neighbouring views in a grid). None puts it back into this view.
+        """
+        self.settings_popup.hide()
+        self.settings_popup.setParent(parent if parent is not None else self.viewport())
+
     def _position_settings_popup(self):
         self.settings_popup.adjustSize()
-        popup_x = max(0, self.settings_button.x() - self.settings_popup.width() - 6)
-        popup_y = max(0, self.settings_button.y())
+        # The popup may live in another widget than the button (see set_popup_parent).
+        button_pos = self.settings_button.mapTo(self.settings_popup.parentWidget(), QPoint(0, 0))
+        popup_x = max(0, button_pos.x() - self.settings_popup.width() - 6)
+        popup_y = max(0, button_pos.y())
         self.settings_popup.move(popup_x, popup_y)
 
     def _init_view_filter(self):

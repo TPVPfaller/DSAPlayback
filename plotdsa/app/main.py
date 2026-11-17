@@ -382,6 +382,9 @@ class DSAApplication(QMainWindow):
                 view.settings_button.setVisible(i == gear_index)
                 if i != gear_index:
                     view.settings_popup.hide()
+                if grid is self.eeg_grid:
+                    # In a grid the popup floats over the window, not clipped by the cell.
+                    view.set_popup_parent(self if len(views) > 1 and i == gear_index else None)
         if not force:
             self._apply_grid_axes()
 
@@ -512,6 +515,10 @@ class DSAApplication(QMainWindow):
         timer = getattr(view, "_timer", None)
         if timer is not None:
             timer.stop()
+        popup = getattr(view, "settings_popup", None)
+        if popup is not None and not view.isAncestorOf(popup):
+            popup.hide()
+            popup.deleteLater()
         view.hide()
         view.deleteLater()
 
