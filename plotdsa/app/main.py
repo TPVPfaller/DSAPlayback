@@ -135,18 +135,33 @@ def _grid_columns(n_channels, width, height):
     return best
 
 
-def _limit_label_overflow(axis, top, bottom):
+def _keep_edge_labels_inside(axis, keep):
     """
-    Let the tick labels of a vertical axis extend at most `top` / `bottom` px beyond its ends
-    (pyqtgraph hides the others). None for both restores pyqtgraph's own limit.
+    Move tick labels of a vertical axis that would stick out past its ends (e.g. the maximum
+    at the top) just inside, so neighbouring views in a grid don't cut them off.
     """
-    if top is None:
-        axis.__dict__.pop("boundingRect", None)
-        axis.setStyle(hideOverlappingLabels=False)
-        return
-    axis.setStyle(hideOverlappingLabels=True)
-    base = type(axis).boundingRect
-    axis.boundingRect = lambda: base(axis).adjusted(0, -top, 0, bottom)
+    axis.__dict__.pop("generateDrawSpecs", None)
+    if keep:
+        base = type(axis).generateDrawSpecs
+
+        def generate_draw_specs(painter):
+            specs = base(axis, painter)
+            if specs is not None:
+                bounds = axis.mapRectFromParent(axis.geometry())
+                moved = []
+                for rect, _, _ in specs[2]:
+                    if rect.top() < bounds.top():
+                        rect.moveTop(bounds.top())
+                        moved.append(rect)
+                    elif rect.bottom() > bounds.bottom():
+                        rect.moveBottom(bounds.bottom())
+                        moved.append(rect)
+                # A moved label wins over a neighbouring one it would now overlap.
+                specs[2][:] = [spec for spec in specs[2]
+                               if spec[0] in moved or not any(spec[0].intersects(r) for r in moved)]
+            return specs
+
+        axis.generateDrawSpecs = generate_draw_specs
     axis.picture = None
     axis.update()
 
@@ -436,7 +451,7 @@ class DSAApplication(QMainWindow):
                     plot_item.showAxis("left")
                     plot_item.showAxis("bottom")
                     left.setWidth(LEFT_AXIS_WIDTH)
-                    _limit_label_overflow(left, None, None)
+                    _keep_edge_labels_inside(left, False)
                     bottom.setHeight(None)
                     if isinstance(view, DSAView):
                         view.ci.setContentsMargins(9, 9, 9, 9)
@@ -444,14 +459,12 @@ class DSAApplication(QMainWindow):
                         plot_item.setContentsMargins(10, 10, 60, 8)
                     continue
                 _, _, first_col, first_row, last_row = self._grid_cell(i)
-                # Shared axes, so the views touch: time axis on the bottom row only, and the
-                # top y tick label only on the top row (below it would be cut off).
+                # Shared axes, so the views touch: time axis on the bottom row only.
                 plot_item.showAxis("left", first_col)
                 plot_item.showAxis("bottom", last_row)
                 left.setWidth(GRID_LEFT_AXIS_WIDTH)
-                # Top y tick label only in the top row and bottom one only in the bottom row;
-                # elsewhere they would be cut off by the neighbouring view.
-                _limit_label_overflow(left, 15 if first_row else 0, 15 if last_row else 0)
+                # Every row shows its maximum, moved just inside instead of cut off.
+                _keep_edge_labels_inside(left, True)
                 bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
                 top = GRID_TOP_MARGIN if first_row else 0  # room for the top y tick label
                 if isinstance(view, DSAView):

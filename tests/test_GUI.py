@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QImage, QPainter
 from main import DSAApplication, DSAView, PSDView, EEGView, SettingsDialog
 from config import UserConfig
 import config
@@ -701,12 +701,20 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
     # Shared axes so the views touch: y ticks in the left column, time axis in the bottom row,
-    # and lower rows drop their top y tick label instead of showing it cut off.
+    # and no extra margins below the top row.
     assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, False, True]
     assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, False, True]
     assert [v.ci.layout.getContentsMargins()[1] for v in dsa_views] == [main_module.GRID_TOP_MARGIN] * 2 + [0]
-    tops = [v.plot.getAxis("left").boundingRect().top() for v in dsa_views]
-    assert tops[0] == tops[1] == -15 and tops[2] == 0
+    # Every row shows its maximum y label, moved just inside its view rather than cut off.
+    for view in dsa_views:
+        axis = view.plot.getAxis("left")
+        if axis.isVisible():
+            image = QImage(10, 10, QImage.Format.Format_ARGB32)
+            painter = QPainter(image)
+            texts = axis.generateDrawSpecs(painter)[2]
+            painter.end()
+            assert any(text == "47" for _, _, text in texts)
+            assert all(rect.top() >= 0 for rect, _, _ in texts)
     assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH < 86
     assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
 
