@@ -793,6 +793,10 @@ class DSAApplication(QMainWindow):
             self.player.pause()
             self._set_title_status(f"Paused {self._file_name}")
         else:
+            # Panned into the past while paused: play on from the right edge of the DSAs.
+            view_end = self.dsa_view.t0 + self.dsa_view._visible_width_sec() - self._file_t0
+            if not self.dsa_view.live_mode and 0 <= view_end < self.player.position:
+                self._seek_playback(view_end)
             self.player.resume()
             self._set_title_status(f"Playing {self._file_name}")
         self.playback_bar.set_playing(self.player.is_playing)

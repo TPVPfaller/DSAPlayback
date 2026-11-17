@@ -807,6 +807,29 @@ def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
                     or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
 
 
+def test_play_resumes_where_a_lower_dsa_was_panned_to(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "eeg.csv"
+    _write_multi_channel_csv(path, 3, seconds=100)
+    assert dsa_app._play_eeg_file(str(path)) is True
+    dsa_app._toggle_playback()  # pause
+    dsa_app._on_zoom_change(0.5)  # 30 s window
+    dsa_app._seek_playback(90)
+
+    # Pan the lower right DSA 20 s into the past, as a mouse drag does.
+    lower = dsa_app.extra_dsa_views[-1]
+    width = lower._visible_width_sec()
+    lower._pan_sec = lower._current_pan_start(width) - 20
+    lower.live_mode = False
+    lower.update()
+    assert not dsa_app.dsa_view.live_mode  # the other DSAs follow
+
+    dsa_app._toggle_playback()  # play
+    assert dsa_app.player.is_playing
+    assert dsa_app.player.position == pytest.approx(70, abs=2)
+    assert all(v.live_mode for v in [dsa_app.dsa_view] + dsa_app.extra_dsa_views)
+    dsa_app._toggle_playback()  # pause
+
+
 def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tmp_path, qtbot):
     five, two = tmp_path / "five.csv", tmp_path / "two.csv"
     _write_multi_channel_csv(five, 5, seconds=4)
