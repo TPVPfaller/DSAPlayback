@@ -379,12 +379,16 @@ class DSAApplication(QMainWindow):
             self._style_channel_view(view, name if multi else None, compact)
         for view, name in zip([self.eeg_view] + self.extra_eeg_views, names):
             self._style_channel_view(view, name if multi else None, compact)
-        # With several DSAs their one settings button sits on top of the shared colorbar.
+        # With several channels the DSA settings button sits on top of the shared colorbar
+        # and the EEG one right below it, in the strip beside the EEG grid.
         if multi:
             self.dsa_view.set_settings_host(self.dsa_colorbar_view.viewport(), self)
+            self.eeg_view.set_settings_host(self.eeg_colorbar_spacer, self)
         else:
             self.dsa_view.set_settings_host(None)
+            self.eeg_view.set_settings_host(None)
         self.dsa_view.settings_button.setVisible(True)
+        self.eeg_view.settings_button.setVisible(True)
         self._apply_grid_axes()
         self._sync_extra_visibility()
 
@@ -421,13 +425,9 @@ class DSAApplication(QMainWindow):
                 grid_layout.setRowStretch(row, 1 if row < n_rows else 0)
             for col in range(max(grid_layout.columnCount(), n_columns)):
                 grid_layout.setColumnStretch(col, 1 if col < n_columns else 0)
-            # One EEG settings button, on the top view of the right column (the DSA one is on
-            # the colorbar).
+            # One settings button per grid, the first view's; with several channels it sits
+            # beside the grid (see _set_channels).
             gear_index = 0
-            if grid is self.eeg_grid:
-                first_row_count = len(views) - (n_rows - 1) * n_columns
-                below = n_columns if first_row_count < n_columns else 0  # top right cell empty
-                gear_index = min(len(views), first_row_count + below) - 1
             for i, view in enumerate(views):
                 grid_layout.addWidget(view, *self._grid_cell(i)[:2])
                 # Sizes come from the stretch only, not from each view's size hint.
@@ -437,9 +437,6 @@ class DSAApplication(QMainWindow):
                 view.settings_button.setVisible(i == gear_index)
                 if i != gear_index:
                     view.settings_popup.hide()
-                if grid is self.eeg_grid:
-                    # In a grid the popup floats over the window, not clipped by the cell.
-                    view.set_popup_parent(self if len(views) > 1 and i == gear_index else None)
         if not force:
             self._apply_grid_axes()
 
@@ -607,7 +604,7 @@ class DSAApplication(QMainWindow):
         for view in self.extra_eeg_views:
             view.setVisible(show_eeg)
         self.dsa_colorbar_view.setVisible(show_dsa and bool(self.extra_dsa_views))
-        self.eeg_colorbar_spacer.setVisible(show_dsa and bool(self.extra_dsa_views))
+        self.eeg_colorbar_spacer.setVisible(bool(self.extra_eeg_views))  # holds the EEG gear
         # Hide the whole area so a hidden grid leaves no empty space.
         self.dsa_area.setVisible(show_dsa)
         self.eeg_area.setVisible(show_eeg)

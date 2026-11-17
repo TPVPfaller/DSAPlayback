@@ -697,7 +697,11 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert gear.isVisible() and gear.parentWidget() is dsa_app.dsa_colorbar_view.viewport()
     assert gear.x() + gear.width() > dsa_app.dsa_colorbar_view.width() - 10 and gear.y() < 10
     assert not any(v.settings_button.isVisible() for v in dsa_app.extra_dsa_views)
-    assert [v.settings_button.isVisible() for v in eeg_views] == [False, False, True]
+    # The one EEG settings button sits beside the EEG grid, right below the DSA one.
+    eeg_gear = dsa_app.eeg_view.settings_button
+    assert eeg_gear.isVisible() and eeg_gear.parentWidget() is dsa_app.eeg_colorbar_spacer
+    assert not any(v.settings_button.isVisible() for v in dsa_app.extra_eeg_views)
+    assert eeg_gear.mapTo(dsa_app, eeg_gear.rect().topLeft()).x() == gear.mapTo(dsa_app, gear.rect().topLeft()).x()
     # Small gaps between the views over the line colour, no axis titles.
     assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == main_module.GRID_SPACING
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
@@ -861,7 +865,8 @@ def test_eeg_settings_popup_in_grid_is_not_clipped_by_its_cell(dsa_app, tmp_path
     views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
     qtbot.waitUntil(lambda: all(v.isVisible() for v in views), timeout=2000)
 
-    gear_view = next(v for v in views if v.settings_button.isVisibleTo(v))
+    gear_view = dsa_app.eeg_view
+    assert gear_view.settings_button.isVisible()
     gear_view._toggle_settings_popup()
 
     popup = gear_view.settings_popup
