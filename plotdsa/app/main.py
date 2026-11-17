@@ -547,7 +547,8 @@ class DSAApplication(QMainWindow):
             axis.setTickFont(tick_font)
             if name in labels:
                 text, units = labels[name]
-                plot_item.setLabel(name, text, units=units, **label_style)
+                # On the axis itself: PlotItem.setLabel would also show a hidden grid axis.
+                axis.setLabel(text, units=units, **label_style)
                 # Grid cells have no room for axis titles; the ticks and the channel name remain.
                 axis.showLabel(not multi)
             axis.picture = None  # re-layout ticks with the new font

@@ -771,6 +771,16 @@ def test_many_channels_use_smaller_text_and_fewer_y_ticks(dsa_app, tmp_path, qtb
     max_uv = dsa_app.user_config.eeg_uv_range_max
     assert [spacing for spacing, _ in eeg_axis._tickSpacing] == [max_uv, max_uv]
 
+    # Scrolling the amplitude re-styles the EEGs but keeps the time axis on the bottom row only.
+    eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    bottoms = [v.getPlotItem().getAxis("bottom").isVisible() for v in eeg_views]
+    assert bottoms.count(True) < len(eeg_views)
+    options = main_module.config.EEG_Y_RANGE_OPTIONS
+    new_max = options[(options.index(max_uv) + 1) % len(options)] if max_uv in options else options[0]
+    dsa_app.eeg_view._set_eeg_y_max(new_max)
+    assert dsa_app.user_config.eeg_uv_range_max == new_max
+    assert [v.getPlotItem().getAxis("bottom").isVisible() for v in eeg_views] == bottoms
+
 
 def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
     path = tmp_path / "eeg.csv"
