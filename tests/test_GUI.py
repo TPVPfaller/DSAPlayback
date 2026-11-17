@@ -844,3 +844,20 @@ def test_eeg_settings_popup_in_grid_is_not_clipped_by_its_cell(dsa_app, tmp_path
     assert popup.isVisible()
     assert popup.parentWidget() is dsa_app  # floats over the neighbouring views
     assert dsa_app.rect().contains(popup.geometry())
+
+
+def test_dark_theme_frames_do_not_add_gaps_between_grid_views(dsa_app, tmp_path, qtbot):
+    # The dark theme gives every scroll area (e.g. QGraphicsView) a margin and a border.
+    app = QApplication.instance()
+    app.setStyleSheet("QAbstractScrollArea { margin: 1px; border: 2px solid #3f4042; }")
+    try:
+        path = tmp_path / "two.csv"
+        _write_multi_channel_csv(path, 2, seconds=4)
+        assert dsa_app._load_eeg_file(str(path)) is True
+        views = [dsa_app.dsa_view] + dsa_app.extra_dsa_views + [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+        qtbot.waitUntil(lambda: all(v.isVisible() for v in views), timeout=2000)
+        for view in views + [dsa_app.dsa_colorbar_view]:
+            assert view.frameWidth() == 0
+            assert view.viewport().geometry() == view.rect()
+    finally:
+        app.setStyleSheet("")

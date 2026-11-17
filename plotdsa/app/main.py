@@ -166,11 +166,16 @@ def _keep_edge_labels_inside(axis, keep):
     axis.update()
 
 
+# Grid views drop the frame and margin that the dark theme gives every scroll area.
+FRAMELESS_VIEW_STYLE = "QGraphicsView { margin: 0px; border: 0px; }"
+
+
 def _fill_background(widget, color):
-    widget.setAutoFillBackground(True)
-    palette = widget.palette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(color))
-    widget.setPalette(palette)
+    # A style sheet, because the app's (dark theme) style sheet overrides palette colours.
+    name = "fill_" + QColor(color).name().lstrip("#")
+    widget.setObjectName(name)
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    widget.setStyleSheet(f"#{name} {{ background-color: {QColor(color).name()}; }}")
 
 
 def _create_play_icon(size=16):
@@ -337,6 +342,7 @@ class DSAApplication(QMainWindow):
         colorbar.getAxis("left").setWidth(22)  # just the rotated label, clear of the bar
         colorbar.getAxis("right").setWidth(24)
         view.setFixedWidth(COLORBAR_WIDTH)
+        view.setStyleSheet(FRAMELESS_VIEW_STYLE)
         view.hide()
         return view, colorbar
 
@@ -535,6 +541,7 @@ class DSAApplication(QMainWindow):
         """
         multi = title is not None
         shrink = 2 if compact else 0
+        view.setStyleSheet(FRAMELESS_VIEW_STYLE if multi else "")
         plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
         DSAApplication._set_channel_label(view, title, config.FONT_SIZE - 6 - shrink)
         label_style = dict(AXIS_LABEL_STYLE, **{"font-size": f"{config.FONT_SIZE - 6 - shrink}pt"})
