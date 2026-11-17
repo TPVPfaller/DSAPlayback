@@ -135,6 +135,22 @@ def _grid_columns(n_channels, width, height):
     return best
 
 
+def _limit_label_overflow(axis, top, bottom):
+    """
+    Let the tick labels of a vertical axis extend at most `top` / `bottom` px beyond its ends
+    (pyqtgraph hides the others). None for both restores pyqtgraph's own limit.
+    """
+    if top is None:
+        axis.__dict__.pop("boundingRect", None)
+        axis.setStyle(hideOverlappingLabels=False)
+        return
+    axis.setStyle(hideOverlappingLabels=True)
+    base = type(axis).boundingRect
+    axis.boundingRect = lambda: base(axis).adjusted(0, -top, 0, bottom)
+    axis.picture = None
+    axis.update()
+
+
 def _fill_background(widget, color):
     widget.setAutoFillBackground(True)
     palette = widget.palette()
@@ -409,19 +425,24 @@ class DSAApplication(QMainWindow):
                     plot_item.showAxis("left")
                     plot_item.showAxis("bottom")
                     left.setWidth(LEFT_AXIS_WIDTH)
+                    _limit_label_overflow(left, None, None)
                     bottom.setHeight(None)
                     if isinstance(view, DSAView):
                         view.ci.setContentsMargins(9, 9, 9, 9)
                     else:
                         plot_item.setContentsMargins(10, 10, 60, 8)
                     continue
-                first_col = self._grid_cell(i)[2]
-                # Every row keeps its time axis and room above for its top y tick label.
+                _, _, first_col, first_row, last_row = self._grid_cell(i)
+                # Shared axes, so the views touch: time axis on the bottom row only, and the
+                # top y tick label only on the top row (below it would be cut off).
                 plot_item.showAxis("left", first_col)
-                plot_item.showAxis("bottom", True)
+                plot_item.showAxis("bottom", last_row)
                 left.setWidth(GRID_LEFT_AXIS_WIDTH)
+                # Top y tick label only in the top row and bottom one only in the bottom row;
+                # elsewhere they would be cut off by the neighbouring view.
+                _limit_label_overflow(left, 15 if first_row else 0, 15 if last_row else 0)
                 bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
-                top = GRID_TOP_MARGIN
+                top = GRID_TOP_MARGIN if first_row else 0  # room for the top y tick label
                 if isinstance(view, DSAView):
                     view.ci.setContentsMargins(0, top, 0, 0)
                 else:
@@ -433,8 +454,8 @@ class DSAApplication(QMainWindow):
 
     def _update_grid_stretch(self):
         """
-        Size the grid columns so that every plot area is equally wide, although only the left
-        column carries y-axis ticks. Rows are all alike (each has its time axis).
+        Size the grid rows and columns so that every plot area is equally large, although
+        only the left column carries y-axis ticks and only the bottom row the time axis.
         """
         n = len(self._channel_names)
         n_columns = self._grid_columns
@@ -446,10 +467,12 @@ class DSAApplication(QMainWindow):
                 grid_layout.setColumnStretch(0, 1)
                 continue
             plot_w = max(1, (grid.width() - GRID_LEFT_AXIS_WIDTH) / n_columns)
+            plot_h = max(1, (grid.height() - GRID_BOTTOM_AXIS_HEIGHT - GRID_TOP_MARGIN) / n_rows)
             for col in range(n_columns):
                 grid_layout.setColumnStretch(col, round(plot_w + (GRID_LEFT_AXIS_WIDTH if col == 0 else 0)))
             for row in range(n_rows):
-                grid_layout.setRowStretch(row, 1)
+                extra = (GRID_TOP_MARGIN if row == 0 else 0) + (GRID_BOTTOM_AXIS_HEIGHT if row == n_rows - 1 else 0)
+                grid_layout.setRowStretch(row, round(plot_h + extra))
 
     @staticmethod
     def _show_own_colorbar(view, show):

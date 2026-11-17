@@ -696,10 +696,13 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
     assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
-    # y ticks in the left column only; every row has its time axis and room for its top y tick.
+    # Shared axes so the views touch: y ticks in the left column, time axis in the bottom row,
+    # and lower rows drop their top y tick label instead of showing it cut off.
     assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, False, True]
-    assert all(v.plot.getAxis("bottom").isVisible() for v in dsa_views)
-    assert all(v.ci.layout.getContentsMargins()[1] == main_module.GRID_TOP_MARGIN for v in dsa_views)
+    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, False, True]
+    assert [v.ci.layout.getContentsMargins()[1] for v in dsa_views] == [main_module.GRID_TOP_MARGIN] * 2 + [0]
+    tops = [v.plot.getAxis("left").boundingRect().top() for v in dsa_views]
+    assert tops[0] == tops[1] == -15 and tops[2] == 0
     assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH < 86
     assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
 
