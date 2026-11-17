@@ -24,6 +24,7 @@ class FrequencyAxis(pg.AxisItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_freq = None
+        self.tick_spacing = 5.0  # Hz between labelled ticks
         style_axis(self)
 
     def set_max_freq(self, max_f):
@@ -36,7 +37,7 @@ class FrequencyAxis(pg.AxisItem):
         if self.max_freq is None or not ticks:
             return ticks
 
-        spacing = 5.0
+        spacing = self.tick_spacing
 
         major_ticks = []
         start = math.ceil(minVal / spacing) * spacing

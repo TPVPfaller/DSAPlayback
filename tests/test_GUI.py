@@ -650,19 +650,27 @@ def _grid_position(grid, view):
 def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_path, qtbot):
     path = tmp_path / "eeg.csv"
     _write_multi_channel_csv(path, 3)
+    dsa_app.resize(1400, 900)
+    qtbot.wait(10)
 
     assert dsa_app._load_eeg_file(str(path)) is True
 
     dsa_views = [dsa_app.dsa_view] + dsa_app.extra_dsa_views
     eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
     assert len(dsa_views) == len(eeg_views) == 3
-    # 3 channels: 2 columns, 2 rows in each grid.
+    # 3 wide cells fit best as 2 columns, 2 rows in each grid.
     assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (0, 1), (1, 0)]
     assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (0, 1), (1, 0)]
     qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_views + eeg_views), timeout=2000)
-    assert dsa_app.dsa_grid.geometry().bottom() < dsa_app.eeg_grid.geometry().top()
-    assert [v.plot.titleLabel.text for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
+    assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_grid.geometry().top()
+    assert all(v.width() > v.height() for v in dsa_views)
+    assert [v.channel_label.text() for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
     assert all(v.dsa_buffer.t0 is not None for v in dsa_views)
+    # One settings button per grid (top right cell) and one shared Power colorbar.
+    assert [v.settings_button.isVisible() for v in dsa_views] == [False, True, False]
+    assert [v.settings_button.isVisible() for v in eeg_views] == [False, True, False]
+    assert dsa_app.dsa_colorbar_view.isVisible()
+    assert not any(v.colorbar.isVisible() for v in dsa_views)
 
     # Zoom and pan apply to every DSA.
     dsa_app._on_zoom_change(0.05)
@@ -679,6 +687,41 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     dsa_app._clear_data()
     assert dsa_app.extra_dsa_views == [] and dsa_app.extra_eeg_views == []
     assert dsa_app.dsa_view.minimumHeight() == config.MIN_DSA_HEIGHT
+    assert dsa_app.dsa_view.settings_button.isVisible() and dsa_app.dsa_view.colorbar.isVisible()
+    assert not dsa_app.dsa_colorbar_view.isVisible()
+    assert not dsa_app.dsa_view.channel_label.isVisible()
+
+
+@pytest.mark.parametrize(("n", "width", "height", "columns"), [
+    (1, 1300, 400, 1),
+    (2, 1300, 400, 2),   # 650 x 400 is closer to the preferred shape than 1300 x 200
+    (3, 1300, 400, 2),
+    (4, 1300, 400, 2),
+    (6, 1300, 400, 3),
+    (8, 900, 280, 2),    # 3 columns would be narrower than the minimum width
+])
+def test_grid_columns_prefer_wide_cells_above_the_minimum_width(n, width, height, columns):
+    assert main_module._grid_columns(n, width, height) == columns
+    if columns > 1:
+        assert width / columns >= main_module.CHANNEL_MIN_WIDTH
+
+
+def test_many_channels_use_smaller_text_and_fewer_y_ticks(dsa_app, tmp_path, qtbot):
+    few, many = tmp_path / "few.csv", tmp_path / "many.csv"
+    _write_multi_channel_csv(few, 2, seconds=4)
+    _write_multi_channel_csv(many, 5, seconds=4)
+
+    assert dsa_app._load_eeg_file(str(few)) is True
+    normal_size = dsa_app.dsa_view.freq_axis.style["tickFont"].pointSize()
+    assert dsa_app.dsa_view.freq_axis.tick_spacing == 5.0
+
+    assert dsa_app._load_eeg_file(str(many)) is True
+    for view in [dsa_app.dsa_view] + dsa_app.extra_dsa_views:
+        assert view.freq_axis.style["tickFont"].pointSize() < normal_size
+        assert view.freq_axis.tick_spacing > 5.0
+    eeg_axis = dsa_app.eeg_view.getPlotItem().getAxis("left")
+    max_uv = dsa_app.user_config.eeg_uv_range_max
+    assert [spacing for spacing, _ in eeg_axis._tickSpacing] == [max_uv, max_uv]
 
 
 def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
