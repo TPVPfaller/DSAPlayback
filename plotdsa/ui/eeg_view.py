@@ -4,7 +4,7 @@ from collections import deque
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph import GridItem
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
 from scipy.signal import lfilter
 
 from .. import config
@@ -72,6 +72,8 @@ class EEGView(pg.PlotWidget):
 
         self._pending = deque()
         self._sample_period = 1.0 / config.SAMPLE_RATE_HZ
+        self._master = None  # the view whose sweep this one follows (see follow)
+        self._followers = []
         self._last_rendered_head = -1
         self.seconds_visible = config.EEG_VIEW_WINDOW_SEC
         self._init_view_filter()
@@ -202,10 +204,26 @@ class EEGView(pg.PlotWidget):
         self.settings_popup.show()
         self.settings_popup.raise_()
 
+    def set_settings_host(self, host=None, popup_parent=None):
+        """
+        Show the settings button at the top right of `host` and its popup in `popup_parent`
+        (e.g. beside a grid of EEG views, where neighbouring views would cut the popup off).
+        None puts both back into this view.
+        """
+        self._settings_host = host
+        button_visible = self.settings_button.isVisibleTo(self.settings_button.parentWidget())
+        self.settings_popup.hide()
+        self.settings_button.setParent(host if host is not None else self.viewport())
+        self.settings_popup.setParent(popup_parent if host is not None else self.viewport())
+        self.settings_button.setVisible(button_visible)
+        self._update_settings_button_pos()
+
     def _position_settings_popup(self):
         self.settings_popup.adjustSize()
-        popup_x = max(0, self.settings_button.x() - self.settings_popup.width() - 6)
-        popup_y = max(0, self.settings_button.y())
+        # The popup may live in another widget than the button (see set_settings_host).
+        button_pos = self.settings_button.mapTo(self.settings_popup.parentWidget(), QPoint(0, 0))
+        popup_x = max(0, button_pos.x() - self.settings_popup.width() - 6)
+        popup_y = max(0, button_pos.y())
         self.settings_popup.move(popup_x, popup_y)
 
     def _init_view_filter(self):
@@ -222,12 +240,17 @@ class EEGView(pg.PlotWidget):
         if not hasattr(self, "settings_button"):
             return
 
-        x = max(0, self.viewport().width() - self.settings_button.width() - 12)
-        self.settings_button.move(x, 8)
+        host = self.settings_button.parentWidget()
+        margin = 12 if host is self.viewport() else 4
+        x = max(0, host.width() - self.settings_button.width() - margin)
+        self.settings_button.move(x, 8 if host is self.viewport() else 4)
+        self.settings_button.raise_()
         if self.settings_popup.isVisible():
             self._position_settings_popup()
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Resize and obj is getattr(self, "_settings_host", None):
+            self._update_settings_button_pos()
         if event.type() == QEvent.MouseButtonPress and self.settings_popup.isVisible():
             from PySide6.QtWidgets import QApplication
 
@@ -314,7 +337,8 @@ class EEGView(pg.PlotWidget):
         px_per_sec = self.user_config.eeg_sweep_speed * dpi / 25.4
 
         try:
-            view_box = self.getViewBox()
+            # A follower sweeps over as many samples as its master, so their lines stay together.
+            view_box = (getattr(self, "_master", None) or self).getViewBox()
         except AttributeError:
             return
         if view_box is None:
@@ -371,6 +395,26 @@ class EEGView(pg.PlotWidget):
             endpoint=False,
             dtype=np.float32,
         )
+        for follower in getattr(self, "_followers", []):
+            follower._update_time_scale()
+
+    def follow(self, master):
+        """
+        Sweep in lockstep with `master` (another channel of the same recording): this view
+        takes in as many samples per frame as the master and draws its line at the same place.
+        """
+        self.stop_following()
+        self._master = master
+        master._followers.append(self)
+        self._timer.stop()
+        self._update_time_scale()
+
+    def stop_following(self):
+        if self._master is not None:
+            if self in self._master._followers:
+                self._master._followers.remove(self)
+            self._master = None
+            self._timer.start(int(1000 / self.RENDER_HZ))
 
     def wheelEvent(self, event):
         """Step through the Y-range presets: wheel up zooms in (smaller range), wheel down zooms out."""
@@ -503,29 +547,38 @@ class EEGView(pg.PlotWidget):
             return
 
         now = time.perf_counter()
-        changed = False
-
+        consumed = 0
         while self._pending and self._pending[0][0] <= now:
-            _, v = self._pending.popleft()
-            self.display_head = (self.display_head + 1) % self.N
-            self.display[self.display_head] = v
-            self.history.append(v)
-            changed = True
+            self._push_sample(self._pending.popleft()[1])
+            consumed += 1
 
+        frac = 0.0
         if self._pending:
             next_wall = self._pending[0][0]
             prev_wall = next_wall - self._sample_period
-            frac = (now - prev_wall) / self._sample_period
-            if frac < 0.0:
-                frac = 0.0
-            elif frac > 1.0:
-                frac = 1.0
-            interp_head = (self.display_head + frac) % self.N
-        else:
-            if self.display_head < 0:
-                return
-            interp_head = float(self.display_head)
+            frac = min(max((now - prev_wall) / self._sample_period, 0.0), 1.0)
+        for follower in self._followers:
+            follower._follow_frame(consumed, len(self._pending), frac)
+        if self.display_head < 0:
+            return
+        self._draw_frame((self.display_head + frac) % self.N, consumed > 0)
 
+    def _follow_frame(self, count, backlog, frac):
+        """Take in `count` samples (more if this view has more waiting than the master)."""
+        consumed = 0
+        while self._pending and (consumed < count or len(self._pending) > backlog):
+            self._push_sample(self._pending.popleft()[1])
+            consumed += 1
+        if self.display_head < 0:
+            return
+        self._draw_frame((self.display_head + frac) % self.N, consumed > 0)
+
+    def _push_sample(self, v):
+        self.display_head = (self.display_head + 1) % self.N
+        self.display[self.display_head] = v
+        self.history.append(v)
+
+    def _draw_frame(self, interp_head, changed):
         self.update_line.setPos((interp_head / self.N) * self.seconds_visible)
 
         head = int(interp_head) % self.N
