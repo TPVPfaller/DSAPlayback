@@ -666,11 +666,19 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert all(v.width() > v.height() for v in dsa_views)
     assert [v.channel_label.text() for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
     assert all(v.dsa_buffer.t0 is not None for v in dsa_views)
-    # One settings button per grid (top right cell) and one shared Power colorbar.
-    assert [v.settings_button.isVisible() for v in dsa_views] == [False, True, False]
-    assert [v.settings_button.isVisible() for v in eeg_views] == [False, True, False]
+    # One shared Power colorbar with the DSA settings button on its top right,
+    # one EEG settings button in the top right cell.
     assert dsa_app.dsa_colorbar_view.isVisible()
     assert not any(v.colorbar.isVisible() for v in dsa_views)
+    gear = dsa_app.dsa_view.settings_button
+    assert gear.isVisible() and gear.parentWidget() is dsa_app.dsa_colorbar_view.viewport()
+    assert gear.x() + gear.width() > dsa_app.dsa_colorbar_view.width() - 10 and gear.y() < 10
+    assert not any(v.settings_button.isVisible() for v in dsa_app.extra_dsa_views)
+    assert [v.settings_button.isVisible() for v in eeg_views] == [False, True, False]
+    # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
+    assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
+    assert not dsa_app.dsa_view.freq_axis.label.isVisible()
+    assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
 
     # Zoom and pan apply to every DSA.
     dsa_app._on_zoom_change(0.05)
@@ -688,6 +696,8 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert dsa_app.extra_dsa_views == [] and dsa_app.extra_eeg_views == []
     assert dsa_app.dsa_view.minimumHeight() == config.MIN_DSA_HEIGHT
     assert dsa_app.dsa_view.settings_button.isVisible() and dsa_app.dsa_view.colorbar.isVisible()
+    assert dsa_app.dsa_view.settings_button.parentWidget() is dsa_app.dsa_view.viewport()
+    assert dsa_app.dsa_view.freq_axis.label.isVisible()
     assert not dsa_app.dsa_colorbar_view.isVisible()
     assert not dsa_app.dsa_view.channel_label.isVisible()
 
@@ -739,7 +749,7 @@ def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
                     or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
 
 
-def test_channel_grid_cells_are_equal_and_without_gaps_after_reloading(dsa_app, tmp_path, qtbot):
+def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tmp_path, qtbot):
     five, two = tmp_path / "five.csv", tmp_path / "two.csv"
     _write_multi_channel_csv(five, 5, seconds=4)
     _write_multi_channel_csv(two, 2, seconds=4)
@@ -750,8 +760,8 @@ def test_channel_grid_cells_are_equal_and_without_gaps_after_reloading(dsa_app, 
 
     for grid, views in ((dsa_app.dsa_grid, [dsa_app.dsa_view] + dsa_app.extra_dsa_views),
                         (dsa_app.eeg_grid, [dsa_app.eeg_view] + dsa_app.extra_eeg_views)):
-        assert grid.layout().spacing() == 0
+        assert grid.layout().spacing() == 1
         left, right = (v.geometry() for v in views)
-        assert left.size() == right.size()
-        assert left.right() + 1 == right.left()  # no gap between neighbouring views
-        assert left.width() + right.width() == grid.width()
+        assert abs(left.width() - right.width()) <= 1 and left.height() == right.height()
+        assert left.right() + 2 == right.left()  # only a 1 px line between neighbouring views
+        assert left.width() + right.width() + 1 == grid.width()
