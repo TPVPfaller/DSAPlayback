@@ -696,10 +696,11 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
     assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
-    # Shared axes: y ticks in the left column, time axis in the bottom row only.
+    # y ticks in the left column only; every row has its time axis and room for its top y tick.
     assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, False, True]
-    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, False, True]
-    assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH <= 62
+    assert all(v.plot.getAxis("bottom").isVisible() for v in dsa_views)
+    assert all(v.ci.layout.getContentsMargins()[1] == main_module.GRID_TOP_MARGIN for v in dsa_views)
+    assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH < 86
     assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
 
     # Zoom and pan apply to every DSA.

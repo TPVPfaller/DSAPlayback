@@ -109,7 +109,7 @@ EEG_FILE_DIR = "C:\\temp\\VSCaptureWave\\Entropy_Data"
 CHANNEL_MIN_WIDTH = 320  # px; fewer columns are used rather than narrower cells
 CHANNEL_ASPECT = 2.5  # preferred cell width / height
 COMPACT_CHANNELS = 4  # above this many channels the views use smaller text and fewer ticks
-COLORBAR_WIDTH = 62
+COLORBAR_WIDTH = 68
 COLORBAR_BAR_WIDTH = 12  # px of the colour gradient itself
 GRID_LINE_COLOR = "#3a3a3a"  # 1 px lines between the channel views
 GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of the left grid column (no axis title)
@@ -292,7 +292,7 @@ class DSAApplication(QMainWindow):
             style_axis(axis)
             axis.setTickFont(small_font)
         colorbar.getAxis("left").setLabel("Power", units="dB", **label_style)
-        colorbar.getAxis("left").setWidth(14)  # just the rotated label
+        colorbar.getAxis("left").setWidth(22)  # just the rotated label, clear of the bar
         colorbar.getAxis("right").setWidth(24)
         view.setFixedWidth(COLORBAR_WIDTH)
         view.hide()
@@ -412,12 +412,13 @@ class DSAApplication(QMainWindow):
                     else:
                         plot_item.setContentsMargins(10, 10, 60, 8)
                     continue
-                _, _, first_col, first_row, last_row = self._grid_cell(i)
+                first_col = self._grid_cell(i)[2]
+                # Every row keeps its time axis and room above for its top y tick label.
                 plot_item.showAxis("left", first_col)
-                plot_item.showAxis("bottom", last_row)
+                plot_item.showAxis("bottom", True)
                 left.setWidth(GRID_LEFT_AXIS_WIDTH)
                 bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
-                top = GRID_TOP_MARGIN if first_row else 0  # room for the top y tick label
+                top = GRID_TOP_MARGIN
                 if isinstance(view, DSAView):
                     view.ci.setContentsMargins(0, top, 0, 0)
                 else:
@@ -429,8 +430,8 @@ class DSAApplication(QMainWindow):
 
     def _update_grid_stretch(self):
         """
-        Size the grid rows and columns so that every plot area is equally large, although
-        only the left column carries y-axis ticks and only the bottom row the time axis.
+        Size the grid columns so that every plot area is equally wide, although only the left
+        column carries y-axis ticks. Rows are all alike (each has its time axis).
         """
         n = len(self._channel_names)
         n_columns = self._grid_columns
@@ -442,12 +443,10 @@ class DSAApplication(QMainWindow):
                 grid_layout.setColumnStretch(0, 1)
                 continue
             plot_w = max(1, (grid.width() - GRID_LEFT_AXIS_WIDTH) / n_columns)
-            plot_h = max(1, (grid.height() - GRID_BOTTOM_AXIS_HEIGHT - GRID_TOP_MARGIN) / n_rows)
             for col in range(n_columns):
                 grid_layout.setColumnStretch(col, round(plot_w + (GRID_LEFT_AXIS_WIDTH if col == 0 else 0)))
             for row in range(n_rows):
-                extra = (GRID_TOP_MARGIN if row == 0 else 0) + (GRID_BOTTOM_AXIS_HEIGHT if row == n_rows - 1 else 0)
-                grid_layout.setRowStretch(row, round(plot_h + extra))
+                grid_layout.setRowStretch(row, 1)
 
     @staticmethod
     def _show_own_colorbar(view, show):
