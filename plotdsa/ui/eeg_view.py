@@ -72,6 +72,8 @@ class EEGView(pg.PlotWidget):
 
         self._pending = deque()
         self._sample_period = 1.0 / config.SAMPLE_RATE_HZ
+        self._master = None  # the view whose sweep this one follows (see follow)
+        self._followers = []
         self._last_rendered_head = -1
         self.seconds_visible = config.EEG_VIEW_WINDOW_SEC
         self._init_view_filter()
@@ -335,7 +337,8 @@ class EEGView(pg.PlotWidget):
         px_per_sec = self.user_config.eeg_sweep_speed * dpi / 25.4
 
         try:
-            view_box = self.getViewBox()
+            # A follower sweeps over as many samples as its master, so their lines stay together.
+            view_box = (getattr(self, "_master", None) or self).getViewBox()
         except AttributeError:
             return
         if view_box is None:
@@ -392,6 +395,26 @@ class EEGView(pg.PlotWidget):
             endpoint=False,
             dtype=np.float32,
         )
+        for follower in getattr(self, "_followers", []):
+            follower._update_time_scale()
+
+    def follow(self, master):
+        """
+        Sweep in lockstep with `master` (another channel of the same recording): this view
+        takes in as many samples per frame as the master and draws its line at the same place.
+        """
+        self.stop_following()
+        self._master = master
+        master._followers.append(self)
+        self._timer.stop()
+        self._update_time_scale()
+
+    def stop_following(self):
+        if self._master is not None:
+            if self in self._master._followers:
+                self._master._followers.remove(self)
+            self._master = None
+            self._timer.start(int(1000 / self.RENDER_HZ))
 
     def wheelEvent(self, event):
         """Step through the Y-range presets: wheel up zooms in (smaller range), wheel down zooms out."""
@@ -524,29 +547,38 @@ class EEGView(pg.PlotWidget):
             return
 
         now = time.perf_counter()
-        changed = False
-
+        consumed = 0
         while self._pending and self._pending[0][0] <= now:
-            _, v = self._pending.popleft()
-            self.display_head = (self.display_head + 1) % self.N
-            self.display[self.display_head] = v
-            self.history.append(v)
-            changed = True
+            self._push_sample(self._pending.popleft()[1])
+            consumed += 1
 
+        frac = 0.0
         if self._pending:
             next_wall = self._pending[0][0]
             prev_wall = next_wall - self._sample_period
-            frac = (now - prev_wall) / self._sample_period
-            if frac < 0.0:
-                frac = 0.0
-            elif frac > 1.0:
-                frac = 1.0
-            interp_head = (self.display_head + frac) % self.N
-        else:
-            if self.display_head < 0:
-                return
-            interp_head = float(self.display_head)
+            frac = min(max((now - prev_wall) / self._sample_period, 0.0), 1.0)
+        for follower in self._followers:
+            follower._follow_frame(consumed, len(self._pending), frac)
+        if self.display_head < 0:
+            return
+        self._draw_frame((self.display_head + frac) % self.N, consumed > 0)
 
+    def _follow_frame(self, count, backlog, frac):
+        """Take in `count` samples (more if this view has more waiting than the master)."""
+        consumed = 0
+        while self._pending and (consumed < count or len(self._pending) > backlog):
+            self._push_sample(self._pending.popleft()[1])
+            consumed += 1
+        if self.display_head < 0:
+            return
+        self._draw_frame((self.display_head + frac) % self.N, consumed > 0)
+
+    def _push_sample(self, v):
+        self.display_head = (self.display_head + 1) % self.N
+        self.display[self.display_head] = v
+        self.history.append(v)
+
+    def _draw_frame(self, interp_head, changed):
         self.update_line.setPos((interp_head / self.N) * self.seconds_visible)
 
         head = int(interp_head) % self.N

@@ -810,6 +810,13 @@ def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
     qtbot.waitUntil(lambda: len(dsa_app.extra_eeg_views[0]._pending) > 0
                     or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
 
+    # Every channel's sweep line moves in lockstep with the first one.
+    eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    qtbot.waitUntil(lambda: dsa_app.eeg_view.display_head > 10, timeout=3000)
+    assert len({v.N for v in eeg_views}) == 1
+    assert len({v.display_head for v in eeg_views}) == 1
+    assert len({v.update_line.pos().x() for v in eeg_views}) == 1
+
 
 def test_play_resumes_where_a_lower_dsa_was_panned_to(dsa_app, tmp_path, qtbot):
     path = tmp_path / "eeg.csv"

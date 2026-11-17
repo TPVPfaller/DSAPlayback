@@ -364,6 +364,7 @@ class DSAApplication(QMainWindow):
             self.extra_dsa_views.append(dsa_view)
             eeg_view = EEGView(self.user_config, self._on_config_change)
             eeg_view.set_playback_speed(self.player.speed)
+            eeg_view.follow(self.eeg_view)  # one sweep line position for every channel
             self.extra_eeg_views.append(eeg_view)
 
         self._channel_names = list(names)
@@ -586,6 +587,8 @@ class DSAApplication(QMainWindow):
         if getattr(view, "_app_event_filter_installed", False):
             QApplication.instance().removeEventFilter(view)
             view._app_event_filter_installed = False
+        if isinstance(view, EEGView):
+            view.stop_following()
         timer = getattr(view, "_timer", None)
         if timer is not None:
             timer.stop()
