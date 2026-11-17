@@ -219,3 +219,29 @@ def test_overview_image_uses_latest_column_without_averaging():
 
     assert np.isnan(image[0]).all()  # before the first column
     assert image[1:, 0].tolist() == pytest.approx([10.0, 20.0, 20.0])
+
+
+def test_player_plays_every_channel_of_a_multi_channel_recording(player, clock, recording):
+    timestamps, values = recording
+    channels = np.vstack([values, 0.5 * values[::-1]])
+    extra_samples, extra_columns = [], []
+    player.new_extra_samples.connect(lambda ch, s: extra_samples.extend(s) if ch == 1 else None)
+    player.new_extra_dsa_column.connect(lambda ch, ts, psd, steps: extra_columns.append((ch, ts, psd)))
+    _start(player, (timestamps, channels))
+
+    while player.is_playing:
+        clock.now += 0.037
+        player._tick()
+
+    assert player.extra_channels == [1]
+    assert player.samples == pytest.approx(values.tolist())
+    assert extra_samples == pytest.approx(channels[1].tolist())
+    expected = compute_dsa_columns(timestamps, channels[1], UserConfig())
+    assert [c[0] for c in extra_columns] == [1] * len(expected)
+    for (_, ts, psd), (exp_ts, exp_psd, _) in zip(extra_columns, expected):
+        assert ts == pytest.approx(exp_ts)
+        np.testing.assert_allclose(psd, exp_psd)
+
+    player.seek(player.duration / 2)
+    played = player.extra_columns_played(1)
+    assert 0 < len(played) < len(expected)

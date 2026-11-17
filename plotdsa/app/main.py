@@ -4,6 +4,7 @@ IEC 62304 – Class B
 EEG Density Spectral Array Viewer
 """
 
+import math
 import os
 import sys
 import ctypes
@@ -13,13 +14,16 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
     QMessageBox,
+    QSizePolicy,
     QLabel,
     QFileDialog,
     QInputDialog,
 )
 from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPalette, QPixmap, QPolygon
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPixmap, QPolygon
 import qdarktheme
 import pyqtgraph as pg
 
@@ -27,22 +31,22 @@ if __package__ in (None, ""):
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from plotdsa.io.eeg_file import read_eeg_csv, compute_dsa_columns, is_single_column
+    from plotdsa.io.eeg_file import read_eeg_channels, compute_dsa_columns, needs_sample_rate
     from plotdsa.app.player import EEGFilePlayer
     from plotdsa.config import UserConfig
     from plotdsa.ui.dsa_settings import SettingsDialog
     from plotdsa.ui.playback_bar import PlaybackBar
     from plotdsa.ui.topbar import TopBar
-    from plotdsa.ui.views import DSAView, PSDView, EEGView
+    from plotdsa.ui.views import DSAView, PSDView, EEGView, AXIS_LABEL_STYLE, AXIS_TICK_FONT_SIZE_PT, LEFT_AXIS_WIDTH, style_axis
     from plotdsa import config
 else:
-    from ..io.eeg_file import read_eeg_csv, compute_dsa_columns, is_single_column
+    from ..io.eeg_file import read_eeg_channels, compute_dsa_columns, needs_sample_rate
     from .player import EEGFilePlayer
     from ..config import UserConfig
     from ..ui.dsa_settings import SettingsDialog
     from ..ui.playback_bar import PlaybackBar
     from ..ui.topbar import TopBar
-    from ..ui.views import DSAView, PSDView, EEGView
+    from ..ui.views import DSAView, PSDView, EEGView, AXIS_LABEL_STYLE, AXIS_TICK_FONT_SIZE_PT, LEFT_AXIS_WIDTH, style_axis
     from .. import config
 
 
@@ -99,6 +103,40 @@ WINDOW_TITLE = "EEG Density Spectral Array"
 LAST_EEG_DIR_KEY = "last_eeg_file_dir"
 DEFAULT_SINGLE_COLUMN_RATE_HZ = 400.0
 EEG_FILE_DIR = "C:\\temp\\VSCaptureWave\\Entropy_Data"
+
+
+# Channel grid of multi-channel files
+CHANNEL_MIN_WIDTH = 320  # px; fewer columns are used rather than narrower cells
+CHANNEL_ASPECT = 2.5  # preferred cell width / height
+COMPACT_CHANNELS = 4  # above this many channels the views use smaller text and fewer ticks
+COLORBAR_WIDTH = 86
+GRID_LINE_COLOR = "#3a3a3a"  # 1 px lines between the channel views
+GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of a grid cell (no axis title)
+
+
+def _grid_columns(n_channels, width, height):
+    """
+    Number of grid columns for n_channels cells in a width x height area: cells as close
+    to CHANNEL_ASPECT (wider than high) as possible, at least CHANNEL_MIN_WIDTH wide,
+    and few empty cells.
+    """
+    best, best_score = 1, None
+    for columns in range(1, n_channels + 1):
+        if columns > 1 and width / columns < CHANNEL_MIN_WIDTH:
+            break
+        rows = math.ceil(n_channels / columns)
+        aspect = (width / columns) / max(1.0, height / rows)
+        score = abs(math.log(aspect / CHANNEL_ASPECT)) + 0.15 * (rows * columns - n_channels)
+        if best_score is None or score < best_score:
+            best, best_score = columns, score
+    return best
+
+
+def _fill_background(widget, color):
+    widget.setAutoFillBackground(True)
+    palette = widget.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(color))
+    widget.setPalette(palette)
 
 
 def _create_play_icon(size=16):
@@ -158,11 +196,21 @@ class DSAApplication(QMainWindow):
 
         self.topbar = TopBar(self.user_config, self._on_config_change, self._on_zoom_change, self.dsa_view.pan,
                              self.dsa_view.calibrate)
-        self.topbar.screenshot_widgets = lambda: [self.dsa_view, self.psd_view, self.eeg_view]
+        self.topbar.screenshot_widgets = lambda: (
+            [self.dsa_view, *self.extra_dsa_views, self.psd_view, self.eeg_view, *self.extra_eeg_views])
         self.playback_bar = PlaybackBar()
         self.playback_bar.hide()  # only shown while a file is played
         self._file_t0 = 0.0  # timestamp of the first sample of the played file
         self.dsa_view.view_changed.connect(self._sync_overview_to_dsa)
+        # Views of the channels after the first in a multi-channel file; channel 1 keeps
+        # using dsa_view / eeg_view so the topbar and playback bar work on it unchanged.
+        self.extra_dsa_views = []
+        self.extra_eeg_views = []
+        self._channel_names = ["Ch 1"]
+        self._grid_columns = 1
+        self._syncing_dsa_views = False
+        # A bound method, not a lambda: a lambda holding self would keep the window alive.
+        self.dsa_view.view_changed.connect(self._on_dsa_view_changed)
         self._create_menu()
 
         container = QWidget()
@@ -178,15 +226,26 @@ class DSAApplication(QMainWindow):
         self.layout.addSpacing(23)
         self.layout.addWidget(self.topbar)
         self.layout.addWidget(self.playback_bar)
-        self.layout.addWidget(self.dsa_view)
+        # All DSAs in one grid at the top, all EEG traces in one grid at the bottom.
+        self.dsa_grid = self._create_view_grid(self.dsa_view)
+        self.eeg_grid = self._create_view_grid(self.eeg_view)
+        # With several channels one Power colorbar right of the DSA grid serves all DSAs.
+        self.dsa_colorbar_view, self.dsa_colorbar = self._create_shared_colorbar()
+        self.dsa_area = QWidget()
+        dsa_area_layout = QHBoxLayout(self.dsa_area)
+        dsa_area_layout.setSpacing(0)
+        dsa_area_layout.setContentsMargins(0, 0, 0, 0)
+        dsa_area_layout.addWidget(self.dsa_grid, 1)
+        dsa_area_layout.addWidget(self.dsa_colorbar_view, 0)
+        self.layout.addWidget(self.dsa_area)
         self.layout.addWidget(self.psd_view)
-        self.layout.addWidget(self.eeg_view)
+        self.layout.addWidget(self.eeg_grid)
 
         self.layout.setStretchFactor(self.topbar, 0)
         self.layout.setStretchFactor(self.playback_bar, 0)
-        self.layout.setStretchFactor(self.dsa_view, 1)
+        self.layout.setStretchFactor(self.dsa_area, 1)
         self.layout.setStretchFactor(self.psd_view, 1)
-        self.layout.setStretchFactor(self.eeg_view, 1)
+        self.layout.setStretchFactor(self.eeg_grid, 1)
 
         self.setCentralWidget(container)
         self._position_disclaimer_label()
@@ -197,6 +256,220 @@ class DSAApplication(QMainWindow):
         self.dsa_view.eeg_file_dropped.connect(self._open_eeg_file)
         self.topbar.sync_slider(self.user_config.display_minutes)
         pg.setConfigOptions(antialias=False)
+
+    @staticmethod
+    def _create_view_grid(first_view):
+        grid = QWidget()
+        grid_layout = QGridLayout(grid)
+        grid_layout.setSpacing(0)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        # The 1 px spacing between views (set for several channels) shows this colour as lines.
+        _fill_background(grid, GRID_LINE_COLOR)
+        grid.empty_cells = []  # black fillers for cells without a channel
+        grid_layout.addWidget(first_view, 0, 0)
+        return grid
+
+    def _create_shared_colorbar(self):
+        view = pg.GraphicsLayoutWidget()
+        colorbar = pg.ColorBarItem(
+            values=(self.user_config.psd_db_min, self.user_config.psd_db_max),
+            colorMap=self.dsa_view.cmap,
+            interactive=False,
+            colorMapMenu=False,
+        )
+        colorbar.setContentsMargins(0, 44, 4, 24)  # room for the DSA settings button on top
+        view.addItem(colorbar)
+        style_axis(colorbar.getAxis("left"))
+        colorbar.getAxis("left").setLabel("Power", units="dB", **AXIS_LABEL_STYLE)
+        style_axis(colorbar.getAxis("right"))
+        view.setFixedWidth(COLORBAR_WIDTH)
+        view.hide()
+        return view, colorbar
+
+    # ------------------ Channel grid ------------------ #
+    def _set_channels(self, names):
+        """Create one DSA and one EEG view per channel and arrange them in the two grids."""
+        for grid, views in ((self.dsa_grid, self.extra_dsa_views), (self.eeg_grid, self.extra_eeg_views)):
+            for view in views:
+                grid.layout().removeWidget(view)
+                self._dispose_view(view)
+        self.extra_dsa_views, self.extra_eeg_views = [], []
+
+        for _ in names[1:]:
+            dsa_view = DSAView(self.user_config, self._on_config_change, self._on_zoom_change)
+            dsa_view.apply_zoom(self.dsa_view.display_minutes)
+            dsa_view.eeg_file_dropped.connect(self._open_eeg_file)
+            dsa_view.view_changed.connect(self._on_dsa_view_changed)
+            self.extra_dsa_views.append(dsa_view)
+            eeg_view = EEGView(self.user_config, self._on_config_change)
+            eeg_view.set_playback_speed(self.player.speed)
+            self.extra_eeg_views.append(eeg_view)
+
+        self._channel_names = list(names)
+        multi = len(names) > 1
+        compact = len(names) > COMPACT_CHANNELS
+        # Place the new views in the grids first: styling a view that has no parent yet
+        # would turn it into a window of its own.
+        self._arrange_channel_grid(force=True)
+        for view in [self.dsa_view] + self.extra_dsa_views:
+            self._show_own_colorbar(view, not multi)
+        self.dsa_colorbar.setLevels((self.user_config.psd_db_min, self.user_config.psd_db_max))
+        for view, name in zip([self.dsa_view] + self.extra_dsa_views, names):
+            self._style_channel_view(view, name if multi else None, compact)
+        for view, name in zip([self.eeg_view] + self.extra_eeg_views, names):
+            self._style_channel_view(view, name if multi else None, compact)
+        # With several DSAs their one settings button sits on top of the shared colorbar.
+        if multi:
+            self.dsa_view.set_settings_host(self.dsa_colorbar_view.viewport(), self)
+        else:
+            self.dsa_view.set_settings_host(None)
+        self.dsa_view.settings_button.setVisible(True)
+        self._sync_extra_visibility()
+
+    def _arrange_channel_grid(self, force=False):
+        """Place the channel views in as many columns as suit the current window size."""
+        names = self._channel_names
+        width = max(1, self.dsa_grid.width() if self.dsa_area.isVisible() else self.eeg_grid.width())
+        height = max(1, self.dsa_grid.height() if self.dsa_area.isVisible() else self.eeg_grid.height())
+        n_columns = _grid_columns(len(names), width, height)
+        if n_columns == self._grid_columns and not force:
+            return
+        self._grid_columns = n_columns
+        n_rows = math.ceil(len(names) / n_columns)
+        for grid, views, min_height in (
+            (self.dsa_grid, [self.dsa_view] + self.extra_dsa_views, config.MIN_DSA_HEIGHT),
+            (self.eeg_grid, [self.eeg_view] + self.extra_eeg_views, config.MIN_EEG_HEIGHT),
+        ):
+            grid_layout = grid.layout()
+            grid_layout.setSpacing(1 if len(views) > 1 else 0)
+            for filler in grid.empty_cells:
+                grid_layout.removeWidget(filler)
+                filler.deleteLater()
+            grid.empty_cells = []
+            for i in range(len(views), n_rows * n_columns):
+                filler = QWidget()
+                _fill_background(filler, "black")
+                grid_layout.addWidget(filler, i // n_columns, i % n_columns)
+                grid.empty_cells.append(filler)
+            # Equal stretch on the used rows and columns and none on rows and columns left
+            # over from an earlier arrangement, so every cell gets the same size.
+            for row in range(max(grid_layout.rowCount(), n_rows)):
+                grid_layout.setRowStretch(row, 1 if row < n_rows else 0)
+            for col in range(max(grid_layout.columnCount(), n_columns)):
+                grid_layout.setColumnStretch(col, 1 if col < n_columns else 0)
+            # One EEG settings button, in the top right cell (the DSA one is on the colorbar).
+            gear_index = min(len(views), n_columns) - 1 if grid is self.eeg_grid else 0
+            for i, view in enumerate(views):
+                grid_layout.addWidget(view, i // n_columns, i % n_columns)
+                # Sizes come from the stretch only, not from each view's size hint.
+                view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+                view.setMinimumHeight(min_height // n_rows)
+                # One settings button per grid: every view's settings apply to all channels.
+                view.settings_button.setVisible(i == gear_index)
+                if i != gear_index:
+                    view.settings_popup.hide()
+
+    @staticmethod
+    def _show_own_colorbar(view, show):
+        # Hidden and squeezed to zero width instead of removed, so the item stays owned by its view.
+        view.colorbar.setVisible(show)
+        view.colorbar.setMaximumWidth(16777215 if show else 0)
+
+    @staticmethod
+    def _set_channel_label(view, title, size_pt):
+        """Channel name in the top left corner of the view (a plain label, no plot title row)."""
+        label = getattr(view, "channel_label", None)
+        if label is None:
+            label = QLabel(view.viewport())
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            view.channel_label = label
+        label.setStyleSheet(f"color: {config.TEXT_COLOR_STR}; background: transparent; font-size: {size_pt}pt;")
+        label.setText(title or "")
+        label.adjustSize()
+        label.move(GRID_LEFT_AXIS_WIDTH + 8, 2)
+        label.setVisible(bool(title))
+
+    @staticmethod
+    def _style_channel_view(view, title, compact):
+        """
+        Channel title (None for a single channel). In a grid the views drop their axis titles
+        and outer margins so neighbouring plots sit close together; compact (many channel)
+        grids also use smaller text and fewer y-axis ticks.
+        """
+        multi = title is not None
+        shrink = 2 if compact else 0
+        plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
+        DSAApplication._set_channel_label(view, title, config.FONT_SIZE - 6 - shrink)
+        label_style = dict(AXIS_LABEL_STYLE, **{"font-size": f"{config.FONT_SIZE - 6 - shrink}pt"})
+        if isinstance(view, DSAView):
+            labels = {"left": ("Frequency", "Hz")}
+            view.freq_axis.tick_spacing = 20.0 if compact else 5.0
+        else:
+            labels = {"left": ("EEG", "\N{MICRO SIGN}V"), "bottom": ("Time", "s")}
+            left = plot_item.getAxis("left")
+            if compact:  # ticks only at 0 and the edges of the amplitude range
+                max_uv = view.user_config.eeg_uv_range_max
+                left.setTickSpacing(major=max_uv, minor=max_uv)
+            else:
+                left.setTickSpacing()
+        tick_font = QFont()
+        tick_font.setPointSize(AXIS_TICK_FONT_SIZE_PT - shrink)
+        for name in ("left", "bottom"):
+            axis = plot_item.getAxis(name)
+            axis.setTickFont(tick_font)
+            if name in labels:
+                text, units = labels[name]
+                plot_item.setLabel(name, text, units=units, **label_style)
+                # Grid cells have no room for axis titles; the ticks and the channel name remain.
+                axis.showLabel(not multi)
+            axis.picture = None  # re-layout ticks with the new font
+            axis.update()
+        plot_item.getAxis("left").setWidth(GRID_LEFT_AXIS_WIDTH if multi else LEFT_AXIS_WIDTH)
+        if isinstance(view, DSAView):
+            view.ci.setContentsMargins(*((0, 6, 4, 0) if multi else (9, 9, 9, 9)))  # top: "47" tick
+        else:
+            plot_item.setContentsMargins(*((0, 6, 4, 0) if multi else (10, 10, 60, 8)))  # top: max tick
+
+    @staticmethod
+    def _dispose_view(view):
+        """Detach a removed channel view so none of its handlers run while it is deleted."""
+        if getattr(view, "_app_event_filter_installed", False):
+            QApplication.instance().removeEventFilter(view)
+            view._app_event_filter_installed = False
+        timer = getattr(view, "_timer", None)
+        if timer is not None:
+            timer.stop()
+        view.hide()
+        view.deleteLater()
+
+    def _sync_extra_visibility(self):
+        show_dsa = self.action_show_dsa.isChecked()
+        show_eeg = self.action_show_eeg.isChecked()
+        for view in self.extra_dsa_views:
+            view.setVisible(show_dsa)
+        for view in self.extra_eeg_views:
+            view.setVisible(show_eeg)
+        self.dsa_colorbar_view.setVisible(show_dsa and bool(self.extra_dsa_views))
+        # Hide the whole area so a hidden grid leaves no empty space.
+        self.dsa_area.setVisible(show_dsa)
+        self.eeg_grid.setVisible(show_eeg)
+
+    def _on_dsa_view_changed(self, start, end):
+        self._sync_dsa_views(self.sender())
+
+    def _sync_dsa_views(self, source):
+        """Show the same time span in every DSA view as in the one that was zoomed or panned."""
+        if self._syncing_dsa_views:
+            return
+        self._syncing_dsa_views = True
+        try:
+            for view in [self.dsa_view] + self.extra_dsa_views:
+                if view is not source:
+                    view.live_mode = source.live_mode
+                    view._pan_sec = source._pan_sec
+                    view.update()
+        finally:
+            self._syncing_dsa_views = False
 
     def _position_disclaimer_label(self):
         self.disclaimer_label.setGeometry(
@@ -211,12 +484,17 @@ class DSAApplication(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "disclaimer_label"):
             self._position_disclaimer_label()
+        if hasattr(self, "dsa_grid"):
+            # After the layouts have given the grids their new size.
+            QTimer.singleShot(0, self._arrange_channel_grid)
 
     # ------------------ EEG file load / playback ------------------ #
     def _init_player(self):
         self.player = EEGFilePlayer(self.user_config, self)
         self.player.new_dsa_column.connect(self._on_file_dsa_column)
         self.player.new_samples.connect(self._on_file_samples)
+        self.player.new_extra_dsa_column.connect(self._on_extra_file_dsa_column)
+        self.player.new_extra_samples.connect(self._on_extra_file_samples)
         self.player.finished.connect(self._on_playback_finished)
         self.player.position_changed.connect(self.playback_bar.set_position)
         self.playback_bar.play_pause_clicked.connect(self._toggle_playback)
@@ -275,13 +553,13 @@ class DSAApplication(QMainWindow):
         return None
 
     def _ask_sample_rate(self, path):
-        """Return (ok, rate): asks for the sampling rate if the file has only a value column."""
-        if not is_single_column(path):
+        """Return (ok, rate): asks for the sampling rate if the file has no timestamp column."""
+        if not needs_sample_rate(path):
             return True, None
         rate, ok = QInputDialog.getDouble(
             self,
             "Sampling Rate",
-            "The file contains only one column.\nSampling rate (Hz):",
+            "The file has no timestamp column.\nSampling rate (Hz):",
             DEFAULT_SINGLE_COLUMN_RATE_HZ,
             1.0,
             100000.0,
@@ -297,26 +575,29 @@ class DSAApplication(QMainWindow):
         self.playback_bar.hide()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            timestamps, values = read_eeg_csv(path, sample_rate_hz=sample_rate_hz)
-            columns = compute_dsa_columns(timestamps, values, self.user_config)
+            timestamps, channels, names = read_eeg_channels(path, sample_rate_hz=sample_rate_hz)
+            channel_columns = [compute_dsa_columns(timestamps, values, self.user_config) for values in channels]
         except Exception as e:
             QApplication.restoreOverrideCursor()
             self._show_message("Load Error", f"Failed to load EEG file: {e}")
             return False
         QApplication.restoreOverrideCursor()
 
-        if not columns:
+        if not any(channel_columns):
             self._show_message("Load EEG File", "The file is too short to compute a DSA.")
             return False
 
-        self._enter_file_mode(path)
-        for ts, psd, steps in columns:
-            self._append_dsa_steps(ts, psd, steps)
+        self._enter_file_mode(path, names)
+        for view, columns in zip([self.dsa_view] + self.extra_dsa_views, channel_columns):
+            for ts, psd, steps in columns:
+                self._append_dsa_steps(ts, psd, steps, view)
 
         # Zoom so the whole recording is visible.
         min_minutes, max_minutes = config.DISPLAY_MINUTES_BOUNDS
         duration_minutes = (timestamps[-1] - timestamps[0]) / 60.0
         self._on_zoom_change(float(min(max(duration_minutes, min_minutes), max_minutes)))
+        for view in self.extra_dsa_views:
+            view.update()
         self.dsa_view.update()
         self.dsa_view.jump_to_live()
         self._set_title_status(f"File: {self._file_name}")
@@ -328,16 +609,16 @@ class DSAApplication(QMainWindow):
             return False
         self.player.stop()
         try:
-            timestamps, values = read_eeg_csv(path, sample_rate_hz=sample_rate_hz)
+            timestamps, channels, names = read_eeg_channels(path, sample_rate_hz=sample_rate_hz)
         except Exception as e:
             self._show_message("Load Error", f"Failed to load EEG file: {e}")
             return False
 
-        self._enter_file_mode(path)
+        self._enter_file_mode(path, names)
         self._file_t0 = float(timestamps[0])
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.player.start(timestamps, values)  # precomputes the whole DSA
+            self.player.start(timestamps, channels)  # precomputes the whole DSA
         finally:
             QApplication.restoreOverrideCursor()
         self.playback_bar.set_speed(1.0)
@@ -378,7 +659,8 @@ class DSAApplication(QMainWindow):
 
     def _set_playback_speed(self, speed):
         self.player.set_speed(speed)
-        self.eeg_view.set_playback_speed(speed)
+        for view in [self.eeg_view] + self.extra_eeg_views:
+            view.set_playback_speed(speed)
 
     def _seek_playback(self, seconds):
         """Jump to `seconds` and rebuild the DSA up to there; the EEG sweep restarts."""
@@ -387,6 +669,12 @@ class DSAApplication(QMainWindow):
             columns = self.player.seek(seconds)
             self.dsa_view.clear_data()
             self.eeg_view.clear_data()
+            for channel, (dsa_view, eeg_view) in enumerate(zip(self.extra_dsa_views, self.extra_eeg_views), 1):
+                dsa_view.clear_data()
+                eeg_view.clear_data()
+                for ts, psd, steps in self.player.extra_columns_played(channel):
+                    self._append_dsa_steps(ts, psd, steps, dsa_view)
+                dsa_view.update()
             for ts, psd, steps in columns:
                 self._append_dsa_steps(ts, psd, steps)
             self.dsa_view.update()
@@ -396,10 +684,11 @@ class DSAApplication(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
-    def _enter_file_mode(self, path):
+    def _enter_file_mode(self, path, names=("Ch 1",)):
         self._file_name = os.path.basename(path)
         self.dsa_view.clear_data()
         self.eeg_view.clear_data()
+        self._set_channels(list(names))
 
     def _clear_data(self):
         self.player.stop()
@@ -407,6 +696,7 @@ class DSAApplication(QMainWindow):
         self._file_name = None
         self.dsa_view.clear_data()
         self.eeg_view.clear_data()
+        self._set_channels(["Ch 1"])
         self._set_title_status(None)
 
     def _on_playback_finished(self):
@@ -426,9 +716,23 @@ class DSAApplication(QMainWindow):
         for value in samples:
             self.eeg_view.append_sample(value)
 
-    def _append_dsa_steps(self, ts, psd, steps):
+    def _on_extra_file_dsa_column(self, channel, ts, psd, steps):
+        # Only stored here: the views are redrawn when channel 1's column of the same chunk arrives.
+        if self.player.is_playing and channel <= len(self.extra_dsa_views):
+            self._append_dsa_steps(ts, psd, steps, self.extra_dsa_views[channel - 1])
+
+    def _on_extra_file_samples(self, channel, samples):
+        if not self.player.is_playing or channel > len(self.extra_eeg_views):
+            return
+        view = self.extra_eeg_views[channel - 1]
+        if view.isVisible():
+            for value in samples:
+                view.append_sample(value)
+
+    def _append_dsa_steps(self, ts, psd, steps, view=None):
+        view = view or self.dsa_view
         for i in range(steps):
-            self.dsa_view.append(ts + i * config.TIME_RESOLUTION, psd)
+            view.append(ts + i * config.TIME_RESOLUTION, psd)
 
     def _show_message(self, title, text, buttons=QMessageBox.StandardButton.Ok, default_button=None):
         msg = QMessageBox(self)
@@ -497,6 +801,8 @@ class DSAApplication(QMainWindow):
         self.action_show_dsa = self._create_toggle_action(view_menu, "Show DSA", True, self.dsa_view)
         self.action_show_psd = self._create_toggle_action(view_menu, "Show PSD", False, self.psd_view)
         self.action_show_eeg = self._create_toggle_action(view_menu, "Show EEG", True, self.eeg_view)
+        self.action_show_dsa.toggled.connect(self._sync_extra_visibility)
+        self.action_show_eeg.toggled.connect(self._sync_extra_visibility)
 
         action_open_eeg = QAction("Load EEG File (CSV)", self)
         action_open_eeg.triggered.connect(self._on_open_eeg_file_clicked)
@@ -575,7 +881,9 @@ class DSAApplication(QMainWindow):
     def _on_zoom_change(self, display_minutes):
         self.topbar.sync_slider(display_minutes)
         self.topbar.update_jump_live_btn(self.dsa_view)
-        self.dsa_view.apply_zoom(display_minutes)
+        for view in getattr(self, "extra_dsa_views", []):
+            view.apply_zoom(display_minutes)
+        self.dsa_view.apply_zoom(display_minutes)  # last, so the other views follow its span
         if hasattr(self, "playback_bar"):
             self.playback_bar.set_window_width(display_minutes * 60.0)
 
@@ -592,6 +900,13 @@ class DSAApplication(QMainWindow):
         self.dsa_view.apply_config(new_config)
         self.psd_view.apply_config(new_config)
         self.eeg_view.apply_config(new_config)
+        for view in getattr(self, "extra_dsa_views", []) + getattr(self, "extra_eeg_views", []):
+            view.apply_config(new_config)
+        if hasattr(self, "dsa_colorbar"):
+            self.dsa_colorbar.setLevels((new_config.psd_db_min, new_config.psd_db_max))
+            if len(self._channel_names) > COMPACT_CHANNELS:  # EEG ticks follow the amplitude range
+                for view, name in zip([self.eeg_view] + self.extra_eeg_views, self._channel_names):
+                    self._style_channel_view(view, name, True)
         if hasattr(self, "playback_bar") and self.playback_bar.isVisibleTo(self):
             self._update_overview()
             if dsa_recomputed:
@@ -604,6 +919,14 @@ class DSAApplication(QMainWindow):
             self.status_timer.stop()
         if hasattr(self, "player"):
             self.player.stop()
+        # No view may filter application events once the window is gone.
+        for view in getattr(self, "extra_dsa_views", []) + getattr(self, "extra_eeg_views", []):
+            self._dispose_view(view)
+        self.extra_dsa_views, self.extra_eeg_views = [], []
+        for view in (getattr(self, "dsa_view", None), getattr(self, "eeg_view", None)):
+            if view is not None and getattr(view, "_app_event_filter_installed", False):
+                QApplication.instance().removeEventFilter(view)
+                view._app_event_filter_installed = False
         event.accept()
 
 

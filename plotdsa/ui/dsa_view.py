@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph import ColorBarItem
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 
 from .. import config
@@ -24,6 +24,7 @@ class FrequencyAxis(pg.AxisItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_freq = None
+        self.tick_spacing = 5.0  # Hz between labelled ticks
         style_axis(self)
 
     def set_max_freq(self, max_f):
@@ -36,7 +37,7 @@ class FrequencyAxis(pg.AxisItem):
         if self.max_freq is None or not ticks:
             return ticks
 
-        spacing = 5.0
+        spacing = self.tick_spacing
 
         major_ticks = []
         start = math.ceil(minVal / spacing) * spacing
@@ -359,22 +360,42 @@ class DSAView(pg.GraphicsLayoutWidget):
         self.settings_popup.show()
         self.settings_popup.raise_()
 
+    def set_settings_host(self, host=None, popup_parent=None):
+        """
+        Show the settings button at the top right of `host` and its popup in `popup_parent`
+        (e.g. next to a colorbar shared by several DSAs). None puts both back into this view.
+        """
+        self._settings_host = host
+        button_visible = self.settings_button.isVisibleTo(self.settings_button.parentWidget())
+        self.settings_popup.hide()
+        self.settings_button.setParent(host if host is not None else self.viewport())
+        self.settings_popup.setParent(popup_parent if host is not None else self.viewport())
+        self.settings_button.setVisible(button_visible)
+        self._update_settings_button_pos()
+
     def _position_settings_popup(self):
         self.settings_popup.adjustSize()
-        popup_x = max(0, self.settings_button.x() - self.settings_popup.width() - 6)
-        popup_y = max(0, self.settings_button.y())
+        # The button may live in another widget than the popup (see set_settings_host).
+        button_pos = self.settings_button.mapTo(self.settings_popup.parentWidget(), QPoint(0, 0))
+        popup_x = max(0, button_pos.x() - self.settings_popup.width() - 6)
+        popup_y = max(0, button_pos.y())
         self.settings_popup.move(popup_x, popup_y)
 
     def _update_settings_button_pos(self):
         if not hasattr(self, "settings_button"):
             return
 
-        x = max(0, self.viewport().width() - self.settings_button.width() - 12)
-        self.settings_button.move(x, 8)
+        host = self.settings_button.parentWidget()
+        margin = 12 if host is self.viewport() else 4
+        x = max(0, host.width() - self.settings_button.width() - margin)
+        self.settings_button.move(x, 8 if host is self.viewport() else 4)
+        self.settings_button.raise_()
         if self.settings_popup.isVisible():
             self._position_settings_popup()
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Resize and obj is getattr(self, "_settings_host", None):
+            self._update_settings_button_pos()
         settings_popup = getattr(self, "settings_popup", None)
         if settings_popup is not None and event.type() == QEvent.MouseButtonPress and settings_popup.isVisible():
             from PySide6.QtWidgets import QApplication
