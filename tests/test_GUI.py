@@ -694,3 +694,21 @@ def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
     dsa_app._toggle_playback()  # resume
     qtbot.waitUntil(lambda: len(dsa_app.extra_eeg_views[0]._pending) > 0
                     or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
+
+
+def test_channel_grid_cells_are_equal_and_without_gaps_after_reloading(dsa_app, tmp_path, qtbot):
+    five, two = tmp_path / "five.csv", tmp_path / "two.csv"
+    _write_multi_channel_csv(five, 5, seconds=4)
+    _write_multi_channel_csv(two, 2, seconds=4)
+
+    assert dsa_app._load_eeg_file(str(five)) is True
+    assert dsa_app._load_eeg_file(str(two)) is True  # fewer columns than before
+    qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_app.extra_dsa_views), timeout=2000)
+
+    for grid, views in ((dsa_app.dsa_grid, [dsa_app.dsa_view] + dsa_app.extra_dsa_views),
+                        (dsa_app.eeg_grid, [dsa_app.eeg_view] + dsa_app.extra_eeg_views)):
+        assert grid.layout().spacing() == 0
+        left, right = (v.geometry() for v in views)
+        assert left.size() == right.size()
+        assert left.right() + 1 == right.left()  # no gap between neighbouring views
+        assert left.width() + right.width() == grid.width()

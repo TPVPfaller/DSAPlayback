@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QGridLayout,
     QMessageBox,
+    QSizePolicy,
     QLabel,
     QFileDialog,
     QInputDialog,
@@ -176,7 +177,8 @@ class DSAApplication(QMainWindow):
         self.extra_dsa_views = []
         self.extra_eeg_views = []
         self._syncing_dsa_views = False
-        self.dsa_view.view_changed.connect(lambda *_: self._sync_dsa_views(self.dsa_view))
+        # A bound method, not a lambda: a lambda holding self would keep the window alive.
+        self.dsa_view.view_changed.connect(self._on_dsa_view_changed)
         self._create_menu()
 
         container = QWidget()
@@ -219,8 +221,13 @@ class DSAApplication(QMainWindow):
     def _create_view_grid(first_view):
         grid = QWidget()
         grid_layout = QGridLayout(grid)
-        grid_layout.setSpacing(2)
+        grid_layout.setSpacing(0)
         grid_layout.setContentsMargins(0, 0, 0, 0)
+        # Empty cells (e.g. the 4th of 3 channels) look like the views' black background.
+        grid.setAutoFillBackground(True)
+        palette = grid.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("black"))
+        grid.setPalette(palette)
         grid_layout.addWidget(first_view, 0, 0)
         return grid
 
@@ -230,16 +237,14 @@ class DSAApplication(QMainWindow):
         for grid, views in ((self.dsa_grid, self.extra_dsa_views), (self.eeg_grid, self.extra_eeg_views)):
             for view in views:
                 grid.layout().removeWidget(view)
-                view.hide()
-                view.close()
-                view.deleteLater()
+                self._dispose_view(view)
         self.extra_dsa_views, self.extra_eeg_views = [], []
 
         for _ in names[1:]:
             dsa_view = DSAView(self.user_config, self._on_config_change, self._on_zoom_change)
             dsa_view.apply_zoom(self.dsa_view.display_minutes)
             dsa_view.eeg_file_dropped.connect(self._open_eeg_file)
-            dsa_view.view_changed.connect(lambda *_, v=dsa_view: self._sync_dsa_views(v))
+            dsa_view.view_changed.connect(self._on_dsa_view_changed)
             self.extra_dsa_views.append(dsa_view)
             eeg_view = EEGView(self.user_config, self._on_config_change)
             eeg_view.set_playback_speed(self.player.speed)
@@ -252,18 +257,42 @@ class DSAApplication(QMainWindow):
             (self.dsa_grid, [self.dsa_view] + self.extra_dsa_views, config.MIN_DSA_HEIGHT),
             (self.eeg_grid, [self.eeg_view] + self.extra_eeg_views, config.MIN_EEG_HEIGHT),
         ):
+            grid_layout = grid.layout()
+            # Equal stretch on the used rows and columns and none on rows and columns left
+            # over from a file with more channels, so every cell gets the same size.
+            for row in range(max(grid_layout.rowCount(), n_rows)):
+                grid_layout.setRowStretch(row, 1 if row < n_rows else 0)
+            for col in range(max(grid_layout.columnCount(), n_columns)):
+                grid_layout.setColumnStretch(col, 1 if col < n_columns else 0)
             for i, (view, name) in enumerate(zip(views, names)):
-                grid.layout().addWidget(view, i // n_columns, i % n_columns)
+                grid_layout.addWidget(view, i // n_columns, i % n_columns)
+                # Sizes come from the stretch only, not from each view's size hint.
+                view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
                 view.setMinimumHeight(min_height // n_rows)
                 plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
                 plot_item.setTitle(name if multi else None, size=f"{config.FONT_SIZE - 6}pt")
         self._sync_extra_visibility()
+
+    @staticmethod
+    def _dispose_view(view):
+        """Detach a removed channel view so none of its handlers run while it is deleted."""
+        if getattr(view, "_app_event_filter_installed", False):
+            QApplication.instance().removeEventFilter(view)
+            view._app_event_filter_installed = False
+        timer = getattr(view, "_timer", None)
+        if timer is not None:
+            timer.stop()
+        view.hide()
+        view.deleteLater()
 
     def _sync_extra_visibility(self):
         for view in self.extra_dsa_views:
             view.setVisible(self.action_show_dsa.isChecked())
         for view in self.extra_eeg_views:
             view.setVisible(self.action_show_eeg.isChecked())
+
+    def _on_dsa_view_changed(self, start, end):
+        self._sync_dsa_views(self.sender())
 
     def _sync_dsa_views(self, source):
         """Show the same time span in every DSA view as in the one that was zoomed or panned."""
@@ -716,6 +745,14 @@ class DSAApplication(QMainWindow):
             self.status_timer.stop()
         if hasattr(self, "player"):
             self.player.stop()
+        # No view may filter application events once the window is gone.
+        for view in getattr(self, "extra_dsa_views", []) + getattr(self, "extra_eeg_views", []):
+            self._dispose_view(view)
+        self.extra_dsa_views, self.extra_eeg_views = [], []
+        for view in (getattr(self, "dsa_view", None), getattr(self, "eeg_view", None)):
+            if view is not None and getattr(view, "_app_event_filter_installed", False):
+                QApplication.instance().removeEventFilter(view)
+                view._app_event_filter_installed = False
         event.accept()
 
 
