@@ -677,8 +677,9 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
     assert len(dsa_views) == len(eeg_views) == 3
     # 3 wide cells fit best as 2 columns, 2 rows in each grid.
-    assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (0, 1), (1, 0)]
-    assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (0, 1), (1, 0)]
+    # The short row is on top, so every column reaches the bottom row and its time axis.
+    assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (1, 0), (1, 1)]
+    assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (1, 0), (1, 1)]
     qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_views + eeg_views), timeout=2000)
     assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_area.geometry().top()
     # The EEG columns line up with the DSA columns (the colorbar's width is kept free).
@@ -696,15 +697,15 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert gear.isVisible() and gear.parentWidget() is dsa_app.dsa_colorbar_view.viewport()
     assert gear.x() + gear.width() > dsa_app.dsa_colorbar_view.width() - 10 and gear.y() < 10
     assert not any(v.settings_button.isVisible() for v in dsa_app.extra_dsa_views)
-    assert [v.settings_button.isVisible() for v in eeg_views] == [False, True, False]
-    # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
-    assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
+    assert [v.settings_button.isVisible() for v in eeg_views] == [False, False, True]
+    # Small gaps between the views over the line colour, no axis titles.
+    assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == main_module.GRID_SPACING
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
     # Shared axes so the views touch: y ticks in the left column, time axis in the bottom row,
     # and no extra margins below the top row.
-    assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, False, True]
-    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, False, True]
-    assert [v.ci.layout.getContentsMargins()[1] for v in dsa_views] == [main_module.GRID_TOP_MARGIN] * 2 + [0]
+    assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, True, False]
+    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, True, True]
+    assert [v.ci.layout.getContentsMargins()[1] for v in dsa_views] == [main_module.GRID_TOP_MARGIN, 0, 0]
     # Every row shows its maximum y label, moved just inside its view rather than cut off.
     for view in dsa_views:
         axis = view.plot.getAxis("left")
@@ -817,10 +818,10 @@ def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tm
 
     for grid, views in ((dsa_app.dsa_grid, [dsa_app.dsa_view] + dsa_app.extra_dsa_views),
                         (dsa_app.eeg_grid, [dsa_app.eeg_view] + dsa_app.extra_eeg_views)):
-        assert grid.layout().spacing() == 1
+        assert grid.layout().spacing() == main_module.GRID_SPACING
         left, right = (v.geometry() for v in views)
-        assert left.right() + 2 == right.left()  # only a 1 px line between neighbouring views
-        assert left.width() + right.width() + 1 == grid.width()
+        assert left.right() + 1 + main_module.GRID_SPACING == right.left()  # a small gap between views
+        assert left.width() + right.width() + main_module.GRID_SPACING == grid.width()
         # Only the left view has y-axis ticks, yet both plot areas are equally large.
         plot_items = [v.plot if v in dsa_app.extra_dsa_views + [dsa_app.dsa_view] else v.getPlotItem()
                       for v in views]

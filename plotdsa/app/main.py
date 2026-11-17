@@ -111,7 +111,8 @@ CHANNEL_ASPECT = 2.5  # preferred cell width / height
 COMPACT_CHANNELS = 4  # above this many channels the views use smaller text and fewer ticks
 COLORBAR_WIDTH = 68
 COLORBAR_BAR_WIDTH = 12  # px of the colour gradient itself
-GRID_LINE_COLOR = "#3a3a3a"  # 1 px lines between the channel views
+GRID_LINE_COLOR = "#3a3a3a"  # thin lines between the channel views
+GRID_SPACING = 3  # px between neighbouring channel views
 GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of the left grid column (no axis title)
 GRID_BOTTOM_AXIS_HEIGHT = 22  # px for the time axis of the bottom grid row
 GRID_TOP_MARGIN = 6  # px above the top grid row, for its top y tick label
@@ -403,15 +404,16 @@ class DSAApplication(QMainWindow):
             (self.eeg_grid, [self.eeg_view] + self.extra_eeg_views, config.MIN_EEG_HEIGHT),
         ):
             grid_layout = grid.layout()
-            grid_layout.setSpacing(1 if len(views) > 1 else 0)
+            grid_layout.setSpacing(GRID_SPACING if len(views) > 1 else 0)
             for filler in grid.empty_cells:
                 grid_layout.removeWidget(filler)
                 filler.deleteLater()
             grid.empty_cells = []
-            for i in range(len(views), n_rows * n_columns):
+            # A short row goes on top, so that every column reaches the bottom row's time axis.
+            for col in range(n_columns - (n_rows * n_columns - len(views)), n_columns):
                 filler = QWidget()
                 _fill_background(filler, "black")
-                grid_layout.addWidget(filler, i // n_columns, i % n_columns)
+                grid_layout.addWidget(filler, 0, col)
                 grid.empty_cells.append(filler)
             # Equal stretch on the used rows and columns and none on rows and columns left
             # over from an earlier arrangement, so every cell gets the same size.
@@ -419,10 +421,15 @@ class DSAApplication(QMainWindow):
                 grid_layout.setRowStretch(row, 1 if row < n_rows else 0)
             for col in range(max(grid_layout.columnCount(), n_columns)):
                 grid_layout.setColumnStretch(col, 1 if col < n_columns else 0)
-            # One EEG settings button, in the top right cell (the DSA one is on the colorbar).
-            gear_index = min(len(views), n_columns) - 1 if grid is self.eeg_grid else 0
+            # One EEG settings button, on the top view of the right column (the DSA one is on
+            # the colorbar).
+            gear_index = 0
+            if grid is self.eeg_grid:
+                first_row_count = len(views) - (n_rows - 1) * n_columns
+                below = n_columns if first_row_count < n_columns else 0  # top right cell empty
+                gear_index = min(len(views), first_row_count + below) - 1
             for i, view in enumerate(views):
-                grid_layout.addWidget(view, i // n_columns, i % n_columns)
+                grid_layout.addWidget(view, *self._grid_cell(i)[:2])
                 # Sizes come from the stretch only, not from each view's size hint.
                 view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
                 view.setMinimumHeight(min_height // n_rows)
@@ -439,8 +446,14 @@ class DSAApplication(QMainWindow):
     def _grid_cell(self, index):
         """(row, column, is first column, is first row, is last row)."""
         n_columns, n = self._grid_columns, len(self._channel_names)
-        row, col = divmod(index, n_columns)
-        return row, col, col == 0, row == 0, row == math.ceil(n / n_columns) - 1
+        n_rows = math.ceil(n / n_columns)
+        # The top row holds the views left over from the full rows below it, left aligned.
+        first_row_count = n - (n_rows - 1) * n_columns
+        if index < first_row_count:
+            row, col = 0, index
+        else:
+            row, col = divmod(index - first_row_count + n_columns, n_columns)
+        return row, col, col == 0, row == 0, row == n_rows - 1
 
     def _apply_grid_axes(self):
         """
