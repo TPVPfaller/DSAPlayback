@@ -696,6 +696,10 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
     assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
+    # Shared axes: y ticks in the left column, time axis in the bottom row only.
+    assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, False, True]
+    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, False, True]
+    assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH <= 62
     assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
 
     # Zoom and pan apply to every DSA.
@@ -780,6 +784,12 @@ def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tm
                         (dsa_app.eeg_grid, [dsa_app.eeg_view] + dsa_app.extra_eeg_views)):
         assert grid.layout().spacing() == 1
         left, right = (v.geometry() for v in views)
-        assert abs(left.width() - right.width()) <= 1 and left.height() == right.height()
         assert left.right() + 2 == right.left()  # only a 1 px line between neighbouring views
         assert left.width() + right.width() + 1 == grid.width()
+        # Only the left view has y-axis ticks, yet both plot areas are equally large.
+        plot_items = [v.plot if v in dsa_app.extra_dsa_views + [dsa_app.dsa_view] else v.getPlotItem()
+                      for v in views]
+        assert [p.getAxis("left").isVisible() for p in plot_items] == [True, False]
+        boxes = [p.getViewBox().sceneBoundingRect() for p in plot_items]
+        assert abs(boxes[0].width() - boxes[1].width()) <= 2
+        assert abs(boxes[0].height() - boxes[1].height()) <= 1

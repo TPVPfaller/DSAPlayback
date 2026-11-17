@@ -109,9 +109,12 @@ EEG_FILE_DIR = "C:\\temp\\VSCaptureWave\\Entropy_Data"
 CHANNEL_MIN_WIDTH = 320  # px; fewer columns are used rather than narrower cells
 CHANNEL_ASPECT = 2.5  # preferred cell width / height
 COMPACT_CHANNELS = 4  # above this many channels the views use smaller text and fewer ticks
-COLORBAR_WIDTH = 86
+COLORBAR_WIDTH = 62
+COLORBAR_BAR_WIDTH = 12  # px of the colour gradient itself
 GRID_LINE_COLOR = "#3a3a3a"  # 1 px lines between the channel views
-GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of a grid cell (no axis title)
+GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of the left grid column (no axis title)
+GRID_BOTTOM_AXIS_HEIGHT = 22  # px for the time axis of the bottom grid row
+GRID_TOP_MARGIN = 6  # px above the top grid row, for its top y tick label
 
 
 def _grid_columns(n_channels, width, height):
@@ -274,14 +277,23 @@ class DSAApplication(QMainWindow):
         colorbar = pg.ColorBarItem(
             values=(self.user_config.psd_db_min, self.user_config.psd_db_max),
             colorMap=self.dsa_view.cmap,
+            width=COLORBAR_BAR_WIDTH,
             interactive=False,
             colorMapMenu=False,
         )
-        colorbar.setContentsMargins(0, 44, 4, 24)  # room for the DSA settings button on top
+        colorbar.setContentsMargins(0, 44, 2, 24)  # room for the DSA settings button on top
+        view.ci.setContentsMargins(0, 0, 0, 0)
         view.addItem(colorbar)
-        style_axis(colorbar.getAxis("left"))
-        colorbar.getAxis("left").setLabel("Power", units="dB", **AXIS_LABEL_STYLE)
-        style_axis(colorbar.getAxis("right"))
+        small_font = QFont()
+        small_font.setPointSize(AXIS_TICK_FONT_SIZE_PT - 2)
+        label_style = dict(AXIS_LABEL_STYLE, **{"font-size": f"{config.FONT_SIZE - 8}pt"})
+        for name in ("left", "right"):
+            axis = colorbar.getAxis(name)
+            style_axis(axis)
+            axis.setTickFont(small_font)
+        colorbar.getAxis("left").setLabel("Power", units="dB", **label_style)
+        colorbar.getAxis("left").setWidth(14)  # just the rotated label
+        colorbar.getAxis("right").setWidth(24)
         view.setFixedWidth(COLORBAR_WIDTH)
         view.hide()
         return view, colorbar
@@ -324,6 +336,7 @@ class DSAApplication(QMainWindow):
         else:
             self.dsa_view.set_settings_host(None)
         self.dsa_view.settings_button.setVisible(True)
+        self._apply_grid_axes()
         self._sync_extra_visibility()
 
     def _arrange_channel_grid(self, force=False):
@@ -333,6 +346,7 @@ class DSAApplication(QMainWindow):
         height = max(1, self.dsa_grid.height() if self.dsa_area.isVisible() else self.eeg_grid.height())
         n_columns = _grid_columns(len(names), width, height)
         if n_columns == self._grid_columns and not force:
+            self._update_grid_stretch()  # the window size changed
             return
         self._grid_columns = n_columns
         n_rows = math.ceil(len(names) / n_columns)
@@ -368,6 +382,72 @@ class DSAApplication(QMainWindow):
                 view.settings_button.setVisible(i == gear_index)
                 if i != gear_index:
                     view.settings_popup.hide()
+        if not force:
+            self._apply_grid_axes()
+
+    def _grid_cell(self, index):
+        """(row, column, is first column, is first row, is last row)."""
+        n_columns, n = self._grid_columns, len(self._channel_names)
+        row, col = divmod(index, n_columns)
+        return row, col, col == 0, row == 0, row == math.ceil(n / n_columns) - 1
+
+    def _apply_grid_axes(self):
+        """
+        In a grid the views share their axes like small multiples: only the left column shows
+        y-axis ticks and only the bottom row the time axis, and there are no
+        margins, so neighbouring plots touch. A single view keeps its normal axes and margins.
+        """
+        multi = len(self._channel_names) > 1
+        for views in ([self.dsa_view] + self.extra_dsa_views, [self.eeg_view] + self.extra_eeg_views):
+            for i, view in enumerate(views):
+                plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
+                left, bottom = plot_item.getAxis("left"), plot_item.getAxis("bottom")
+                if not multi:
+                    plot_item.showAxis("left")
+                    plot_item.showAxis("bottom")
+                    left.setWidth(LEFT_AXIS_WIDTH)
+                    bottom.setHeight(None)
+                    if isinstance(view, DSAView):
+                        view.ci.setContentsMargins(9, 9, 9, 9)
+                    else:
+                        plot_item.setContentsMargins(10, 10, 60, 8)
+                    continue
+                _, _, first_col, first_row, last_row = self._grid_cell(i)
+                plot_item.showAxis("left", first_col)
+                plot_item.showAxis("bottom", last_row)
+                left.setWidth(GRID_LEFT_AXIS_WIDTH)
+                bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
+                top = GRID_TOP_MARGIN if first_row else 0  # room for the top y tick label
+                if isinstance(view, DSAView):
+                    view.ci.setContentsMargins(0, top, 0, 0)
+                else:
+                    plot_item.setContentsMargins(0, top, 0, 0)
+                label = getattr(view, "channel_label", None)
+                if label is not None:
+                    label.move((GRID_LEFT_AXIS_WIDTH if first_col else 0) + 6, top + 2)
+        self._update_grid_stretch()
+
+    def _update_grid_stretch(self):
+        """
+        Size the grid rows and columns so that every plot area is equally large, although
+        only the left column carries y-axis ticks and only the bottom row the time axis.
+        """
+        n = len(self._channel_names)
+        n_columns = self._grid_columns
+        n_rows = math.ceil(n / n_columns)
+        for grid in (self.dsa_grid, self.eeg_grid):
+            grid_layout = grid.layout()
+            if n == 1:
+                grid_layout.setRowStretch(0, 1)
+                grid_layout.setColumnStretch(0, 1)
+                continue
+            plot_w = max(1, (grid.width() - GRID_LEFT_AXIS_WIDTH) / n_columns)
+            plot_h = max(1, (grid.height() - GRID_BOTTOM_AXIS_HEIGHT - GRID_TOP_MARGIN) / n_rows)
+            for col in range(n_columns):
+                grid_layout.setColumnStretch(col, round(plot_w + (GRID_LEFT_AXIS_WIDTH if col == 0 else 0)))
+            for row in range(n_rows):
+                extra = (GRID_TOP_MARGIN if row == 0 else 0) + (GRID_BOTTOM_AXIS_HEIGHT if row == n_rows - 1 else 0)
+                grid_layout.setRowStretch(row, round(plot_h + extra))
 
     @staticmethod
     def _show_own_colorbar(view, show):
@@ -386,7 +466,6 @@ class DSAApplication(QMainWindow):
         label.setStyleSheet(f"color: {config.TEXT_COLOR_STR}; background: transparent; font-size: {size_pt}pt;")
         label.setText(title or "")
         label.adjustSize()
-        label.move(GRID_LEFT_AXIS_WIDTH + 8, 2)
         label.setVisible(bool(title))
 
     @staticmethod
@@ -424,11 +503,6 @@ class DSAApplication(QMainWindow):
                 axis.showLabel(not multi)
             axis.picture = None  # re-layout ticks with the new font
             axis.update()
-        plot_item.getAxis("left").setWidth(GRID_LEFT_AXIS_WIDTH if multi else LEFT_AXIS_WIDTH)
-        if isinstance(view, DSAView):
-            view.ci.setContentsMargins(*((0, 6, 4, 0) if multi else (9, 9, 9, 9)))  # top: "47" tick
-        else:
-            plot_item.setContentsMargins(*((0, 6, 4, 0) if multi else (10, 10, 60, 8)))  # top: max tick
 
     @staticmethod
     def _dispose_view(view):
