@@ -258,13 +258,24 @@ class DSAApplication(QMainWindow):
         dsa_area_layout.addWidget(self.dsa_colorbar_view, 0)
         self.layout.addWidget(self.dsa_area)
         self.layout.addWidget(self.psd_view)
-        self.layout.addWidget(self.eeg_grid)
+        # A black strip as wide as the colorbar keeps the EEG columns in line with the DSAs.
+        self.eeg_area = QWidget()
+        eeg_area_layout = QHBoxLayout(self.eeg_area)
+        eeg_area_layout.setSpacing(0)
+        eeg_area_layout.setContentsMargins(0, 0, 0, 0)
+        eeg_area_layout.addWidget(self.eeg_grid, 1)
+        self.eeg_colorbar_spacer = QWidget()
+        self.eeg_colorbar_spacer.setFixedWidth(COLORBAR_WIDTH)
+        _fill_background(self.eeg_colorbar_spacer, "black")
+        self.eeg_colorbar_spacer.hide()
+        eeg_area_layout.addWidget(self.eeg_colorbar_spacer, 0)
+        self.layout.addWidget(self.eeg_area)
 
         self.layout.setStretchFactor(self.topbar, 0)
         self.layout.setStretchFactor(self.playback_bar, 0)
         self.layout.setStretchFactor(self.dsa_area, 1)
         self.layout.setStretchFactor(self.psd_view, 1)
-        self.layout.setStretchFactor(self.eeg_grid, 1)
+        self.layout.setStretchFactor(self.eeg_area, 1)
 
         self.setCentralWidget(container)
         self._position_disclaimer_label()
@@ -553,9 +564,10 @@ class DSAApplication(QMainWindow):
         for view in self.extra_eeg_views:
             view.setVisible(show_eeg)
         self.dsa_colorbar_view.setVisible(show_dsa and bool(self.extra_dsa_views))
+        self.eeg_colorbar_spacer.setVisible(show_dsa and bool(self.extra_dsa_views))
         # Hide the whole area so a hidden grid leaves no empty space.
         self.dsa_area.setVisible(show_dsa)
-        self.eeg_grid.setVisible(show_eeg)
+        self.eeg_area.setVisible(show_eeg)
 
     def _on_dsa_view_changed(self, start, end):
         self._sync_dsa_views(self.sender())

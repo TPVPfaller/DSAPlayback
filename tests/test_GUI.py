@@ -680,7 +680,11 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (0, 1), (1, 0)]
     assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (0, 1), (1, 0)]
     qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_views + eeg_views), timeout=2000)
-    assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_grid.geometry().top()
+    assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_area.geometry().top()
+    # The EEG columns line up with the DSA columns (the colorbar's width is kept free).
+    for dsa, eeg in zip(dsa_views, eeg_views):
+        assert dsa.mapTo(dsa_app, dsa.rect().topLeft()).x() == eeg.mapTo(dsa_app, eeg.rect().topLeft()).x()
+        assert dsa.width() == eeg.width()
     assert all(v.width() > v.height() for v in dsa_views)
     assert [v.channel_label.text() for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
     assert all(v.dsa_buffer.t0 is not None for v in dsa_views)
