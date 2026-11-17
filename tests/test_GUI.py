@@ -716,7 +716,7 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
             assert any(text == "47" for _, _, text in texts)
             assert all(rect.top() >= 0 for rect, _, _ in texts)
     assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH < 86
-    assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
+    assert dsa_app.dsa_view.freq_axis.width() == dsa_app._grid_axis_width() >= main_module.GRID_LEFT_AXIS_WIDTH
 
     # Zoom and pan apply to every DSA.
     dsa_app._on_zoom_change(0.05)
@@ -780,6 +780,15 @@ def test_many_channels_use_smaller_text_and_fewer_y_ticks(dsa_app, tmp_path, qtb
     dsa_app.eeg_view._set_eeg_y_max(new_max)
     assert dsa_app.user_config.eeg_uv_range_max == new_max
     assert [v.getPlotItem().getAxis("bottom").isVisible() for v in eeg_views] == bottoms
+
+    # Even at the largest amplitude the top row's EEG shows its bottom (negative) label.
+    largest = max(options)
+    dsa_app.eeg_view._set_eeg_y_max(largest)
+    image = QImage(10, 10, QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    texts = [text for _, _, text in dsa_app.eeg_view.getPlotItem().getAxis("left").generateDrawSpecs(painter)[2]]
+    painter.end()
+    assert f"-{largest}" in [t.replace("\N{MINUS SIGN}", "-") for t in texts]
 
 
 def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
 )
 from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPixmap, QPolygon
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPalette, QPixmap, QPolygon
 import qdarktheme
 import pyqtgraph as pg
 
@@ -443,6 +443,7 @@ class DSAApplication(QMainWindow):
         margins, so neighbouring plots touch. A single view keeps its normal axes and margins.
         """
         multi = len(self._channel_names) > 1
+        axis_width = self._grid_axis_width()
         for views in ([self.dsa_view] + self.extra_dsa_views, [self.eeg_view] + self.extra_eeg_views):
             for i, view in enumerate(views):
                 plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
@@ -462,7 +463,7 @@ class DSAApplication(QMainWindow):
                 # Shared axes, so the views touch: time axis on the bottom row only.
                 plot_item.showAxis("left", first_col)
                 plot_item.showAxis("bottom", last_row)
-                left.setWidth(GRID_LEFT_AXIS_WIDTH)
+                left.setWidth(axis_width)
                 # Every row shows its maximum, moved just inside instead of cut off.
                 _keep_edge_labels_inside(left, True)
                 bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
@@ -473,8 +474,15 @@ class DSAApplication(QMainWindow):
                     plot_item.setContentsMargins(0, top, 0, 0)
                 label = getattr(view, "channel_label", None)
                 if label is not None:
-                    label.move((GRID_LEFT_AXIS_WIDTH if first_col else 0) + 6, top + 2)
+                    label.move((axis_width if first_col else 0) + 6, top + 2)
         self._update_grid_stretch()
+
+    def _grid_axis_width(self):
+        """Width of the left grid column's y axis: room for the widest EEG label, e.g. -150."""
+        font = self.eeg_view.getPlotItem().getAxis("left").style["tickFont"] or QFont()
+        metrics = QFontMetrics(font)
+        widest = max(metrics.horizontalAdvance(f"-{value}") for value in config.EEG_Y_RANGE_OPTIONS)
+        return max(GRID_LEFT_AXIS_WIDTH, widest + 8)  # + the gap between label and axis
 
     def _update_grid_stretch(self):
         """
@@ -482,6 +490,7 @@ class DSAApplication(QMainWindow):
         only the left column carries y-axis ticks and only the bottom row the time axis.
         """
         n = len(self._channel_names)
+        axis_width = self._grid_axis_width()
         n_columns = self._grid_columns
         n_rows = math.ceil(n / n_columns)
         for grid in (self.dsa_grid, self.eeg_grid):
@@ -490,10 +499,10 @@ class DSAApplication(QMainWindow):
                 grid_layout.setRowStretch(0, 1)
                 grid_layout.setColumnStretch(0, 1)
                 continue
-            plot_w = max(1, (grid.width() - GRID_LEFT_AXIS_WIDTH) / n_columns)
+            plot_w = max(1, (grid.width() - axis_width) / n_columns)
             plot_h = max(1, (grid.height() - GRID_BOTTOM_AXIS_HEIGHT - GRID_TOP_MARGIN) / n_rows)
             for col in range(n_columns):
-                grid_layout.setColumnStretch(col, round(plot_w + (GRID_LEFT_AXIS_WIDTH if col == 0 else 0)))
+                grid_layout.setColumnStretch(col, round(plot_w + (axis_width if col == 0 else 0)))
             for row in range(n_rows):
                 extra = (GRID_TOP_MARGIN if row == 0 else 0) + (GRID_BOTTOM_AXIS_HEIGHT if row == n_rows - 1 else 0)
                 grid_layout.setRowStretch(row, round(plot_h + extra))
