@@ -897,3 +897,21 @@ def test_dark_theme_frames_do_not_add_gaps_between_grid_views(dsa_app, tmp_path,
             assert view.viewport().geometry() == view.rect()
     finally:
         app.setStyleSheet("")
+
+
+def test_overview_rectangle_is_not_clipped_by_a_dark_theme_frame(qtbot):
+    from plotdsa.ui.dsa_overview import DSAOverview
+
+    app = QApplication.instance()
+    app.setStyleSheet("QAbstractScrollArea { margin: 1px; border: 2px solid #3f4042; }")
+    try:
+        overview = DSAOverview()
+        qtbot.addWidget(overview)
+        overview.resize(400, 40)
+        overview.show()
+        qtbot.waitExposed(overview)
+        # pyqtgraph lays the plot out over the whole widget, so the viewport must be as big.
+        assert overview.frameWidth() == 0
+        assert overview.viewport().geometry() == overview.rect()
+    finally:
+        app.setStyleSheet("")

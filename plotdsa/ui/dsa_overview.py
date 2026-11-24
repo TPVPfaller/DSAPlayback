@@ -59,6 +59,9 @@ class DSAOverview(pg.PlotWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent, background="k")
+        # No frame or margin (the dark theme gives every scroll area both): pyqtgraph lays the
+        # plot out over the whole widget, so a frame would clip the rectangle's bottom edge.
+        self.setStyleSheet("QGraphicsView { margin: 0px; border: 0px; }")
         self._duration = 0.0
         self._width = 0.0
         self._position = 0.0
