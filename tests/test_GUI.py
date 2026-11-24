@@ -913,5 +913,9 @@ def test_overview_rectangle_is_not_clipped_by_a_dark_theme_frame(qtbot):
         # pyqtgraph lays the plot out over the whole widget, so the viewport must be as big.
         assert overview.frameWidth() == 0
         assert overview.viewport().geometry() == overview.rect()
+        # All four edges come from the rectangle's own paint (the separate edge items, which
+        # could be repainted a frame later, are invisible), so they always move together.
+        from PySide6.QtCore import Qt
+        assert all(line.pen.style() == Qt.PenStyle.NoPen for line in overview.region.lines)
     finally:
         app.setStyleSheet("")
