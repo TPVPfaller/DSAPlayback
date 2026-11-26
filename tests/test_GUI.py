@@ -217,6 +217,21 @@ def test_load_eeg_csv_file_fills_dsa_and_clear_empties_it(dsa_app, tmp_path):
     assert dsa_app.windowTitle() == main_module.WINDOW_TITLE
 
 
+def test_loaded_single_channel_dsa_fills_the_view_width(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "eeg.csv"
+    _write_test_eeg_csv(path)
+    dsa_app.resize(1400, 900)
+    colorbar_width = dsa_app.dsa_view.colorbar.maximumWidth()
+
+    assert dsa_app._load_eeg_file(str(path)) is True
+    qtbot.wait(50)
+
+    view = dsa_app.dsa_view
+    # The colorbar keeps its own width instead of taking half of the view.
+    assert view.colorbar.maximumWidth() == colorbar_width
+    assert view.plot.width() > 0.8 * view.width()
+
+
 def test_play_eeg_csv_file_emits_dsa_columns(dsa_app, tmp_path, qtbot):
     path = tmp_path / "eeg.csv"
     _write_test_eeg_csv(path, seconds=3)

@@ -527,8 +527,11 @@ class DSAApplication(QMainWindow):
     @staticmethod
     def _show_own_colorbar(view, show):
         # Hidden and squeezed to zero width instead of removed, so the item stays owned by its view.
+        # Shown again at its own fixed width: a larger maximum lets it take half the view.
+        if not hasattr(view, "_own_colorbar_width"):
+            view._own_colorbar_width = view.colorbar.maximumWidth()
         view.colorbar.setVisible(show)
-        view.colorbar.setMaximumWidth(16777215 if show else 0)
+        view.colorbar.setMaximumWidth(view._own_colorbar_width if show else 0)
 
     @staticmethod
     def _set_channel_label(view, title, size_pt):
