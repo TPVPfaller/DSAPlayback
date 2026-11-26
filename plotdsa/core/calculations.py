@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.signal import welch, firwin, lfilter
+from scipy.signal import welch, firwin, lfilter, detrend
 from scipy.signal.windows import dpss
 from .. import config
 
@@ -28,7 +28,10 @@ class DSACalculator:
         return filtered
 
     def filter_window(self, eeg_values):
-        return self._apply_filters(np.asarray(eeg_values, dtype=np.float32))
+        # Remove the electrode offset and slow drift first: the short FIR filter does not
+        # block DC, and its zero start state would turn an offset into a step at the window start.
+        window = detrend(np.asarray(eeg_values, dtype=np.float32), type="linear")
+        return self._apply_filters(window)
 
     def compute_psd_from_filtered(self, filtered, method='multitaper'):
         if method == 'multitaper':
