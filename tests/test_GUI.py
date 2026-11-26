@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QImage, QPainter
 from main import DSAApplication, DSAView, PSDView, EEGView, SettingsDialog
 from config import UserConfig
 import config
@@ -677,10 +677,15 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
     assert len(dsa_views) == len(eeg_views) == 3
     # 3 wide cells fit best as 2 columns, 2 rows in each grid.
-    assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (0, 1), (1, 0)]
-    assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (0, 1), (1, 0)]
+    # The short row is on top, so every column reaches the bottom row and its time axis.
+    assert [_grid_position(dsa_app.dsa_grid, v) for v in dsa_views] == [(0, 0), (1, 0), (1, 1)]
+    assert [_grid_position(dsa_app.eeg_grid, v) for v in eeg_views] == [(0, 0), (1, 0), (1, 1)]
     qtbot.waitUntil(lambda: all(v.isVisible() for v in dsa_views + eeg_views), timeout=2000)
-    assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_grid.geometry().top()
+    assert dsa_app.dsa_area.geometry().bottom() < dsa_app.eeg_area.geometry().top()
+    # The EEG columns line up with the DSA columns (the colorbar's width is kept free).
+    for dsa, eeg in zip(dsa_views, eeg_views):
+        assert dsa.mapTo(dsa_app, dsa.rect().topLeft()).x() == eeg.mapTo(dsa_app, eeg.rect().topLeft()).x()
+        assert dsa.width() == eeg.width()
     assert all(v.width() > v.height() for v in dsa_views)
     assert [v.channel_label.text() for v in dsa_views] == ["EEG1", "EEG2", "EEG3"]
     assert all(v.dsa_buffer.t0 is not None for v in dsa_views)
@@ -692,11 +697,31 @@ def test_load_multi_channel_file_shows_dsas_above_eegs_in_a_grid(dsa_app, tmp_pa
     assert gear.isVisible() and gear.parentWidget() is dsa_app.dsa_colorbar_view.viewport()
     assert gear.x() + gear.width() > dsa_app.dsa_colorbar_view.width() - 10 and gear.y() < 10
     assert not any(v.settings_button.isVisible() for v in dsa_app.extra_dsa_views)
-    assert [v.settings_button.isVisible() for v in eeg_views] == [False, True, False]
-    # Thin lines between the views: 1 px spacing over the line colour, no axis titles.
-    assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == 1
+    # The one EEG settings button sits beside the EEG grid, right below the DSA one.
+    eeg_gear = dsa_app.eeg_view.settings_button
+    assert eeg_gear.isVisible() and eeg_gear.parentWidget() is dsa_app.eeg_colorbar_spacer
+    assert not any(v.settings_button.isVisible() for v in dsa_app.extra_eeg_views)
+    assert eeg_gear.mapTo(dsa_app, eeg_gear.rect().topLeft()).x() == gear.mapTo(dsa_app, gear.rect().topLeft()).x()
+    # Small gaps between the views over the line colour, no axis titles.
+    assert dsa_app.dsa_grid.layout().spacing() == dsa_app.eeg_grid.layout().spacing() == main_module.GRID_SPACING
     assert not dsa_app.dsa_view.freq_axis.label.isVisible()
-    assert dsa_app.dsa_view.freq_axis.width() == main_module.GRID_LEFT_AXIS_WIDTH
+    # Shared axes so the views touch: y ticks in the left column, time axis in the bottom row,
+    # and no extra margins below the top row.
+    assert [v.plot.getAxis("left").isVisible() for v in dsa_views] == [True, True, False]
+    assert [v.plot.getAxis("bottom").isVisible() for v in dsa_views] == [False, True, True]
+    assert [v.ci.layout.getContentsMargins()[1] for v in dsa_views] == [main_module.GRID_TOP_MARGIN, 0, 0]
+    # Every row shows its maximum y label, moved just inside its view rather than cut off.
+    for view in dsa_views:
+        axis = view.plot.getAxis("left")
+        if axis.isVisible():
+            image = QImage(10, 10, QImage.Format.Format_ARGB32)
+            painter = QPainter(image)
+            texts = axis.generateDrawSpecs(painter)[2]
+            painter.end()
+            assert any(text == "47" for _, _, text in texts)
+            assert all(rect.top() >= 0 for rect, _, _ in texts)
+    assert dsa_app.dsa_colorbar_view.width() == main_module.COLORBAR_WIDTH < 86
+    assert dsa_app.dsa_view.freq_axis.width() == dsa_app._grid_axis_width() >= main_module.GRID_LEFT_AXIS_WIDTH
 
     # Zoom and pan apply to every DSA.
     dsa_app._on_zoom_change(0.05)
@@ -751,6 +776,25 @@ def test_many_channels_use_smaller_text_and_fewer_y_ticks(dsa_app, tmp_path, qtb
     max_uv = dsa_app.user_config.eeg_uv_range_max
     assert [spacing for spacing, _ in eeg_axis._tickSpacing] == [max_uv, max_uv]
 
+    # Scrolling the amplitude re-styles the EEGs but keeps the time axis on the bottom row only.
+    eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    bottoms = [v.getPlotItem().getAxis("bottom").isVisible() for v in eeg_views]
+    assert bottoms.count(True) < len(eeg_views)
+    options = main_module.config.EEG_Y_RANGE_OPTIONS
+    new_max = options[(options.index(max_uv) + 1) % len(options)] if max_uv in options else options[0]
+    dsa_app.eeg_view._set_eeg_y_max(new_max)
+    assert dsa_app.user_config.eeg_uv_range_max == new_max
+    assert [v.getPlotItem().getAxis("bottom").isVisible() for v in eeg_views] == bottoms
+
+    # Even at the largest amplitude the top row's EEG shows its bottom (negative) label.
+    largest = max(options)
+    dsa_app.eeg_view._set_eeg_y_max(largest)
+    image = QImage(10, 10, QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    texts = [text for _, _, text in dsa_app.eeg_view.getPlotItem().getAxis("left").generateDrawSpecs(painter)[2]]
+    painter.end()
+    assert f"-{largest}" in [t.replace("\N{MINUS SIGN}", "-") for t in texts]
+
 
 def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
     path = tmp_path / "eeg.csv"
@@ -766,6 +810,36 @@ def test_play_multi_channel_file_feeds_every_channel(dsa_app, tmp_path, qtbot):
     qtbot.waitUntil(lambda: len(dsa_app.extra_eeg_views[0]._pending) > 0
                     or dsa_app.extra_eeg_views[0].display_head >= 0, timeout=3000)
 
+    # Every channel's sweep line moves in lockstep with the first one.
+    eeg_views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    qtbot.waitUntil(lambda: dsa_app.eeg_view.display_head > 10, timeout=3000)
+    assert len({v.N for v in eeg_views}) == 1
+    assert len({v.display_head for v in eeg_views}) == 1
+    assert len({v.update_line.pos().x() for v in eeg_views}) == 1
+
+
+def test_play_resumes_where_a_lower_dsa_was_panned_to(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "eeg.csv"
+    _write_multi_channel_csv(path, 3, seconds=100)
+    assert dsa_app._play_eeg_file(str(path)) is True
+    dsa_app._toggle_playback()  # pause
+    dsa_app._on_zoom_change(0.5)  # 30 s window
+    dsa_app._seek_playback(90)
+
+    # Pan the lower right DSA 20 s into the past, as a mouse drag does.
+    lower = dsa_app.extra_dsa_views[-1]
+    width = lower._visible_width_sec()
+    lower._pan_sec = lower._current_pan_start(width) - 20
+    lower.live_mode = False
+    lower.update()
+    assert not dsa_app.dsa_view.live_mode  # the other DSAs follow
+
+    dsa_app._toggle_playback()  # play
+    assert dsa_app.player.is_playing
+    assert dsa_app.player.position == pytest.approx(70, abs=2)
+    assert all(v.live_mode for v in [dsa_app.dsa_view] + dsa_app.extra_dsa_views)
+    dsa_app._toggle_playback()  # pause
+
 
 def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tmp_path, qtbot):
     five, two = tmp_path / "five.csv", tmp_path / "two.csv"
@@ -778,8 +852,70 @@ def test_channel_grid_cells_are_equal_and_only_lined_after_reloading(dsa_app, tm
 
     for grid, views in ((dsa_app.dsa_grid, [dsa_app.dsa_view] + dsa_app.extra_dsa_views),
                         (dsa_app.eeg_grid, [dsa_app.eeg_view] + dsa_app.extra_eeg_views)):
-        assert grid.layout().spacing() == 1
+        assert grid.layout().spacing() == main_module.GRID_SPACING
         left, right = (v.geometry() for v in views)
-        assert abs(left.width() - right.width()) <= 1 and left.height() == right.height()
-        assert left.right() + 2 == right.left()  # only a 1 px line between neighbouring views
-        assert left.width() + right.width() + 1 == grid.width()
+        assert left.right() + 1 + main_module.GRID_SPACING == right.left()  # a small gap between views
+        assert left.width() + right.width() + main_module.GRID_SPACING == grid.width()
+        # Only the left view has y-axis ticks, yet both plot areas are equally large.
+        plot_items = [v.plot if v in dsa_app.extra_dsa_views + [dsa_app.dsa_view] else v.getPlotItem()
+                      for v in views]
+        assert [p.getAxis("left").isVisible() for p in plot_items] == [True, False]
+        boxes = [p.getViewBox().sceneBoundingRect() for p in plot_items]
+        assert abs(boxes[0].width() - boxes[1].width()) <= 2
+        assert abs(boxes[0].height() - boxes[1].height()) <= 1
+
+
+def test_eeg_settings_popup_in_grid_is_not_clipped_by_its_cell(dsa_app, tmp_path, qtbot):
+    path = tmp_path / "four.csv"
+    _write_multi_channel_csv(path, 4, seconds=4)
+    assert dsa_app._load_eeg_file(str(path)) is True
+    views = [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+    qtbot.waitUntil(lambda: all(v.isVisible() for v in views), timeout=2000)
+
+    gear_view = dsa_app.eeg_view
+    assert gear_view.settings_button.isVisible()
+    gear_view._toggle_settings_popup()
+
+    popup = gear_view.settings_popup
+    assert popup.isVisible()
+    assert popup.parentWidget() is dsa_app  # floats over the neighbouring views
+    assert dsa_app.rect().contains(popup.geometry())
+
+
+def test_dark_theme_frames_do_not_add_gaps_between_grid_views(dsa_app, tmp_path, qtbot):
+    # The dark theme gives every scroll area (e.g. QGraphicsView) a margin and a border.
+    app = QApplication.instance()
+    app.setStyleSheet("QAbstractScrollArea { margin: 1px; border: 2px solid #3f4042; }")
+    try:
+        path = tmp_path / "two.csv"
+        _write_multi_channel_csv(path, 2, seconds=4)
+        assert dsa_app._load_eeg_file(str(path)) is True
+        views = [dsa_app.dsa_view] + dsa_app.extra_dsa_views + [dsa_app.eeg_view] + dsa_app.extra_eeg_views
+        qtbot.waitUntil(lambda: all(v.isVisible() for v in views), timeout=2000)
+        for view in views + [dsa_app.dsa_colorbar_view]:
+            assert view.frameWidth() == 0
+            assert view.viewport().geometry() == view.rect()
+    finally:
+        app.setStyleSheet("")
+
+
+def test_overview_rectangle_is_not_clipped_by_a_dark_theme_frame(qtbot):
+    from plotdsa.ui.dsa_overview import DSAOverview
+
+    app = QApplication.instance()
+    app.setStyleSheet("QAbstractScrollArea { margin: 1px; border: 2px solid #3f4042; }")
+    try:
+        overview = DSAOverview()
+        qtbot.addWidget(overview)
+        overview.resize(400, 40)
+        overview.show()
+        qtbot.waitExposed(overview)
+        # pyqtgraph lays the plot out over the whole widget, so the viewport must be as big.
+        assert overview.frameWidth() == 0
+        assert overview.viewport().geometry() == overview.rect()
+        # All four edges come from the rectangle's own paint (the separate edge items, which
+        # could be repainted a frame later, are invisible), so they always move together.
+        from PySide6.QtCore import Qt
+        assert all(line.pen.style() == Qt.PenStyle.NoPen for line in overview.region.lines)
+    finally:
+        app.setStyleSheet("")

@@ -30,7 +30,17 @@ RECT_PEN = pg.mkPen("w", width=2)
 
 
 class _RectRegion(pg.LinearRegionItem):
-    """LinearRegionItem drawn as a closed rectangle (top and bottom edges added)."""
+    """
+    LinearRegionItem drawn as a closed rectangle. All four edges are drawn here, in one
+    paint, so they always move together (its own edge lines are separate items that Qt can
+    repaint a frame later, so they are made invisible).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for line in self.lines:
+            line.setPen(pg.mkPen(None))
+            line.setHoverPen(pg.mkPen(None))
 
     def paint(self, p, *args):
         super().paint(p, *args)
@@ -38,10 +48,13 @@ class _RectRegion(pg.LinearRegionItem):
         p.save()
         p.resetTransform()
         p.setPen(RECT_PEN)
-        # Inset by one pixel so the edges are not clipped at the plot border.
-        top, bottom = device_rect.top() + 1, device_rect.bottom() - 1
-        p.drawLine(device_rect.left(), top, device_rect.right(), top)
-        p.drawLine(device_rect.left(), bottom, device_rect.right(), bottom)
+        # The top edge inset by one pixel so it is not clipped at the plot border.
+        top, bottom = device_rect.top() + 1, device_rect.bottom()
+        left, right = device_rect.left(), device_rect.right()
+        p.drawLine(left, top, right, top)
+        p.drawLine(left, bottom, right, bottom)
+        p.drawLine(left, top, left, bottom)
+        p.drawLine(right, top, right, bottom)
         p.restore()
 
 
@@ -59,6 +72,9 @@ class DSAOverview(pg.PlotWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent, background="k")
+        # No frame or margin (the dark theme gives every scroll area both): pyqtgraph lays the
+        # plot out over the whole widget, so a frame would clip the rectangle's bottom edge.
+        self.setStyleSheet("QGraphicsView { margin: 0px; border: 0px; }")
         self._duration = 0.0
         self._width = 0.0
         self._position = 0.0

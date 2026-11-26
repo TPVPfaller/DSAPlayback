@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
 )
 from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPixmap, QPolygon
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPalette, QPixmap, QPolygon
 import qdarktheme
 import pyqtgraph as pg
 
@@ -109,9 +109,13 @@ EEG_FILE_DIR = "C:\\temp\\VSCaptureWave\\Entropy_Data"
 CHANNEL_MIN_WIDTH = 320  # px; fewer columns are used rather than narrower cells
 CHANNEL_ASPECT = 2.5  # preferred cell width / height
 COMPACT_CHANNELS = 4  # above this many channels the views use smaller text and fewer ticks
-COLORBAR_WIDTH = 86
-GRID_LINE_COLOR = "#3a3a3a"  # 1 px lines between the channel views
-GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of a grid cell (no axis title)
+COLORBAR_WIDTH = 68
+COLORBAR_BAR_WIDTH = 12  # px of the colour gradient itself
+GRID_LINE_COLOR = "#3a3a3a"  # thin lines between the channel views
+GRID_SPACING = 3  # px between neighbouring channel views
+GRID_LEFT_AXIS_WIDTH = 30  # px for the y-axis ticks of the left grid column (no axis title)
+GRID_BOTTOM_AXIS_HEIGHT = 22  # px for the time axis of the bottom grid row
+GRID_TOP_MARGIN = 6  # px above the top grid row, for its top y tick label
 
 
 def _grid_columns(n_channels, width, height):
@@ -132,11 +136,47 @@ def _grid_columns(n_channels, width, height):
     return best
 
 
+def _keep_edge_labels_inside(axis, keep):
+    """
+    Move tick labels of a vertical axis that would stick out past its ends (e.g. the maximum
+    at the top) just inside, so neighbouring views in a grid don't cut them off.
+    """
+    axis.__dict__.pop("generateDrawSpecs", None)
+    if keep:
+        base = type(axis).generateDrawSpecs
+
+        def generate_draw_specs(painter):
+            specs = base(axis, painter)
+            if specs is not None:
+                bounds = axis.mapRectFromParent(axis.geometry())
+                moved = []
+                for rect, _, _ in specs[2]:
+                    if rect.top() < bounds.top():
+                        rect.moveTop(bounds.top())
+                        moved.append(rect)
+                    elif rect.bottom() > bounds.bottom():
+                        rect.moveBottom(bounds.bottom())
+                        moved.append(rect)
+                # A moved label wins over a neighbouring one it would now overlap.
+                specs[2][:] = [spec for spec in specs[2]
+                               if spec[0] in moved or not any(spec[0].intersects(r) for r in moved)]
+            return specs
+
+        axis.generateDrawSpecs = generate_draw_specs
+    axis.picture = None
+    axis.update()
+
+
+# Grid views drop the frame and margin that the dark theme gives every scroll area.
+FRAMELESS_VIEW_STYLE = "QGraphicsView { margin: 0px; border: 0px; }"
+
+
 def _fill_background(widget, color):
-    widget.setAutoFillBackground(True)
-    palette = widget.palette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(color))
-    widget.setPalette(palette)
+    # A style sheet, because the app's (dark theme) style sheet overrides palette colours.
+    name = "fill_" + QColor(color).name().lstrip("#")
+    widget.setObjectName(name)
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    widget.setStyleSheet(f"#{name} {{ background-color: {QColor(color).name()}; }}")
 
 
 def _create_play_icon(size=16):
@@ -239,13 +279,24 @@ class DSAApplication(QMainWindow):
         dsa_area_layout.addWidget(self.dsa_colorbar_view, 0)
         self.layout.addWidget(self.dsa_area)
         self.layout.addWidget(self.psd_view)
-        self.layout.addWidget(self.eeg_grid)
+        # A black strip as wide as the colorbar keeps the EEG columns in line with the DSAs.
+        self.eeg_area = QWidget()
+        eeg_area_layout = QHBoxLayout(self.eeg_area)
+        eeg_area_layout.setSpacing(0)
+        eeg_area_layout.setContentsMargins(0, 0, 0, 0)
+        eeg_area_layout.addWidget(self.eeg_grid, 1)
+        self.eeg_colorbar_spacer = QWidget()
+        self.eeg_colorbar_spacer.setFixedWidth(COLORBAR_WIDTH)
+        _fill_background(self.eeg_colorbar_spacer, "black")
+        self.eeg_colorbar_spacer.hide()
+        eeg_area_layout.addWidget(self.eeg_colorbar_spacer, 0)
+        self.layout.addWidget(self.eeg_area)
 
         self.layout.setStretchFactor(self.topbar, 0)
         self.layout.setStretchFactor(self.playback_bar, 0)
         self.layout.setStretchFactor(self.dsa_area, 1)
         self.layout.setStretchFactor(self.psd_view, 1)
-        self.layout.setStretchFactor(self.eeg_grid, 1)
+        self.layout.setStretchFactor(self.eeg_area, 1)
 
         self.setCentralWidget(container)
         self._position_disclaimer_label()
@@ -274,15 +325,25 @@ class DSAApplication(QMainWindow):
         colorbar = pg.ColorBarItem(
             values=(self.user_config.psd_db_min, self.user_config.psd_db_max),
             colorMap=self.dsa_view.cmap,
+            width=COLORBAR_BAR_WIDTH,
             interactive=False,
             colorMapMenu=False,
         )
-        colorbar.setContentsMargins(0, 44, 4, 24)  # room for the DSA settings button on top
+        colorbar.setContentsMargins(0, 44, 2, 24)  # room for the DSA settings button on top
+        view.ci.setContentsMargins(0, 0, 0, 0)
         view.addItem(colorbar)
-        style_axis(colorbar.getAxis("left"))
-        colorbar.getAxis("left").setLabel("Power", units="dB", **AXIS_LABEL_STYLE)
-        style_axis(colorbar.getAxis("right"))
+        small_font = QFont()
+        small_font.setPointSize(AXIS_TICK_FONT_SIZE_PT - 2)
+        label_style = dict(AXIS_LABEL_STYLE, **{"font-size": f"{config.FONT_SIZE - 8}pt"})
+        for name in ("left", "right"):
+            axis = colorbar.getAxis(name)
+            style_axis(axis)
+            axis.setTickFont(small_font)
+        colorbar.getAxis("left").setLabel("Power", units="dB", **label_style)
+        colorbar.getAxis("left").setWidth(22)  # just the rotated label, clear of the bar
+        colorbar.getAxis("right").setWidth(24)
         view.setFixedWidth(COLORBAR_WIDTH)
+        view.setStyleSheet(FRAMELESS_VIEW_STYLE)
         view.hide()
         return view, colorbar
 
@@ -303,6 +364,7 @@ class DSAApplication(QMainWindow):
             self.extra_dsa_views.append(dsa_view)
             eeg_view = EEGView(self.user_config, self._on_config_change)
             eeg_view.set_playback_speed(self.player.speed)
+            eeg_view.follow(self.eeg_view)  # one sweep line position for every channel
             self.extra_eeg_views.append(eeg_view)
 
         self._channel_names = list(names)
@@ -318,12 +380,17 @@ class DSAApplication(QMainWindow):
             self._style_channel_view(view, name if multi else None, compact)
         for view, name in zip([self.eeg_view] + self.extra_eeg_views, names):
             self._style_channel_view(view, name if multi else None, compact)
-        # With several DSAs their one settings button sits on top of the shared colorbar.
+        # With several channels the DSA settings button sits on top of the shared colorbar
+        # and the EEG one right below it, in the strip beside the EEG grid.
         if multi:
             self.dsa_view.set_settings_host(self.dsa_colorbar_view.viewport(), self)
+            self.eeg_view.set_settings_host(self.eeg_colorbar_spacer, self)
         else:
             self.dsa_view.set_settings_host(None)
+            self.eeg_view.set_settings_host(None)
         self.dsa_view.settings_button.setVisible(True)
+        self.eeg_view.settings_button.setVisible(True)
+        self._apply_grid_axes()
         self._sync_extra_visibility()
 
     def _arrange_channel_grid(self, force=False):
@@ -333,6 +400,7 @@ class DSAApplication(QMainWindow):
         height = max(1, self.dsa_grid.height() if self.dsa_area.isVisible() else self.eeg_grid.height())
         n_columns = _grid_columns(len(names), width, height)
         if n_columns == self._grid_columns and not force:
+            self._update_grid_stretch()  # the window size changed
             return
         self._grid_columns = n_columns
         n_rows = math.ceil(len(names) / n_columns)
@@ -341,15 +409,16 @@ class DSAApplication(QMainWindow):
             (self.eeg_grid, [self.eeg_view] + self.extra_eeg_views, config.MIN_EEG_HEIGHT),
         ):
             grid_layout = grid.layout()
-            grid_layout.setSpacing(1 if len(views) > 1 else 0)
+            grid_layout.setSpacing(GRID_SPACING if len(views) > 1 else 0)
             for filler in grid.empty_cells:
                 grid_layout.removeWidget(filler)
                 filler.deleteLater()
             grid.empty_cells = []
-            for i in range(len(views), n_rows * n_columns):
+            # A short row goes on top, so that every column reaches the bottom row's time axis.
+            for col in range(n_columns - (n_rows * n_columns - len(views)), n_columns):
                 filler = QWidget()
                 _fill_background(filler, "black")
-                grid_layout.addWidget(filler, i // n_columns, i % n_columns)
+                grid_layout.addWidget(filler, 0, col)
                 grid.empty_cells.append(filler)
             # Equal stretch on the used rows and columns and none on rows and columns left
             # over from an earlier arrangement, so every cell gets the same size.
@@ -357,10 +426,11 @@ class DSAApplication(QMainWindow):
                 grid_layout.setRowStretch(row, 1 if row < n_rows else 0)
             for col in range(max(grid_layout.columnCount(), n_columns)):
                 grid_layout.setColumnStretch(col, 1 if col < n_columns else 0)
-            # One EEG settings button, in the top right cell (the DSA one is on the colorbar).
-            gear_index = min(len(views), n_columns) - 1 if grid is self.eeg_grid else 0
+            # One settings button per grid, the first view's; with several channels it sits
+            # beside the grid (see _set_channels).
+            gear_index = 0
             for i, view in enumerate(views):
-                grid_layout.addWidget(view, i // n_columns, i % n_columns)
+                grid_layout.addWidget(view, *self._grid_cell(i)[:2])
                 # Sizes come from the stretch only, not from each view's size hint.
                 view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
                 view.setMinimumHeight(min_height // n_rows)
@@ -368,6 +438,91 @@ class DSAApplication(QMainWindow):
                 view.settings_button.setVisible(i == gear_index)
                 if i != gear_index:
                     view.settings_popup.hide()
+        if not force:
+            self._apply_grid_axes()
+
+    def _grid_cell(self, index):
+        """(row, column, is first column, is first row, is last row)."""
+        n_columns, n = self._grid_columns, len(self._channel_names)
+        n_rows = math.ceil(n / n_columns)
+        # The top row holds the views left over from the full rows below it, left aligned.
+        first_row_count = n - (n_rows - 1) * n_columns
+        if index < first_row_count:
+            row, col = 0, index
+        else:
+            row, col = divmod(index - first_row_count + n_columns, n_columns)
+        return row, col, col == 0, row == 0, row == n_rows - 1
+
+    def _apply_grid_axes(self):
+        """
+        In a grid the views share their axes like small multiples: only the left column shows
+        y-axis ticks and only the bottom row the time axis, and there are no
+        margins, so neighbouring plots touch. A single view keeps its normal axes and margins.
+        """
+        multi = len(self._channel_names) > 1
+        axis_width = self._grid_axis_width()
+        for views in ([self.dsa_view] + self.extra_dsa_views, [self.eeg_view] + self.extra_eeg_views):
+            for i, view in enumerate(views):
+                plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
+                left, bottom = plot_item.getAxis("left"), plot_item.getAxis("bottom")
+                if not multi:
+                    plot_item.showAxis("left")
+                    plot_item.showAxis("bottom")
+                    left.setWidth(LEFT_AXIS_WIDTH)
+                    _keep_edge_labels_inside(left, False)
+                    bottom.setHeight(None)
+                    if isinstance(view, DSAView):
+                        view.ci.setContentsMargins(9, 9, 9, 9)
+                    else:
+                        plot_item.setContentsMargins(10, 10, 60, 8)
+                    continue
+                _, _, first_col, first_row, last_row = self._grid_cell(i)
+                # Shared axes, so the views touch: time axis on the bottom row only.
+                plot_item.showAxis("left", first_col)
+                plot_item.showAxis("bottom", last_row)
+                left.setWidth(axis_width)
+                # Every row shows its maximum, moved just inside instead of cut off.
+                _keep_edge_labels_inside(left, True)
+                bottom.setHeight(GRID_BOTTOM_AXIS_HEIGHT)
+                top = GRID_TOP_MARGIN if first_row else 0  # room for the top y tick label
+                if isinstance(view, DSAView):
+                    view.ci.setContentsMargins(0, top, 0, 0)
+                else:
+                    plot_item.setContentsMargins(0, top, 0, 0)
+                label = getattr(view, "channel_label", None)
+                if label is not None:
+                    label.move((axis_width if first_col else 0) + 6, top + 2)
+        self._update_grid_stretch()
+
+    def _grid_axis_width(self):
+        """Width of the left grid column's y axis: room for the widest EEG label, e.g. -150."""
+        font = self.eeg_view.getPlotItem().getAxis("left").style["tickFont"] or QFont()
+        metrics = QFontMetrics(font)
+        widest = max(metrics.horizontalAdvance(f"-{value}") for value in config.EEG_Y_RANGE_OPTIONS)
+        return max(GRID_LEFT_AXIS_WIDTH, widest + 8)  # + the gap between label and axis
+
+    def _update_grid_stretch(self):
+        """
+        Size the grid rows and columns so that every plot area is equally large, although
+        only the left column carries y-axis ticks and only the bottom row the time axis.
+        """
+        n = len(self._channel_names)
+        axis_width = self._grid_axis_width()
+        n_columns = self._grid_columns
+        n_rows = math.ceil(n / n_columns)
+        for grid in (self.dsa_grid, self.eeg_grid):
+            grid_layout = grid.layout()
+            if n == 1:
+                grid_layout.setRowStretch(0, 1)
+                grid_layout.setColumnStretch(0, 1)
+                continue
+            plot_w = max(1, (grid.width() - axis_width) / n_columns)
+            plot_h = max(1, (grid.height() - GRID_BOTTOM_AXIS_HEIGHT - GRID_TOP_MARGIN) / n_rows)
+            for col in range(n_columns):
+                grid_layout.setColumnStretch(col, round(plot_w + (axis_width if col == 0 else 0)))
+            for row in range(n_rows):
+                extra = (GRID_TOP_MARGIN if row == 0 else 0) + (GRID_BOTTOM_AXIS_HEIGHT if row == n_rows - 1 else 0)
+                grid_layout.setRowStretch(row, round(plot_h + extra))
 
     @staticmethod
     def _show_own_colorbar(view, show):
@@ -386,7 +541,6 @@ class DSAApplication(QMainWindow):
         label.setStyleSheet(f"color: {config.TEXT_COLOR_STR}; background: transparent; font-size: {size_pt}pt;")
         label.setText(title or "")
         label.adjustSize()
-        label.move(GRID_LEFT_AXIS_WIDTH + 8, 2)
         label.setVisible(bool(title))
 
     @staticmethod
@@ -398,6 +552,7 @@ class DSAApplication(QMainWindow):
         """
         multi = title is not None
         shrink = 2 if compact else 0
+        view.setStyleSheet(FRAMELESS_VIEW_STYLE if multi else "")
         plot_item = view.plot if isinstance(view, DSAView) else view.getPlotItem()
         DSAApplication._set_channel_label(view, title, config.FONT_SIZE - 6 - shrink)
         label_style = dict(AXIS_LABEL_STYLE, **{"font-size": f"{config.FONT_SIZE - 6 - shrink}pt"})
@@ -419,16 +574,12 @@ class DSAApplication(QMainWindow):
             axis.setTickFont(tick_font)
             if name in labels:
                 text, units = labels[name]
-                plot_item.setLabel(name, text, units=units, **label_style)
+                # On the axis itself: PlotItem.setLabel would also show a hidden grid axis.
+                axis.setLabel(text, units=units, **label_style)
                 # Grid cells have no room for axis titles; the ticks and the channel name remain.
                 axis.showLabel(not multi)
             axis.picture = None  # re-layout ticks with the new font
             axis.update()
-        plot_item.getAxis("left").setWidth(GRID_LEFT_AXIS_WIDTH if multi else LEFT_AXIS_WIDTH)
-        if isinstance(view, DSAView):
-            view.ci.setContentsMargins(*((0, 6, 4, 0) if multi else (9, 9, 9, 9)))  # top: "47" tick
-        else:
-            plot_item.setContentsMargins(*((0, 6, 4, 0) if multi else (10, 10, 60, 8)))  # top: max tick
 
     @staticmethod
     def _dispose_view(view):
@@ -436,9 +587,15 @@ class DSAApplication(QMainWindow):
         if getattr(view, "_app_event_filter_installed", False):
             QApplication.instance().removeEventFilter(view)
             view._app_event_filter_installed = False
+        if isinstance(view, EEGView):
+            view.stop_following()
         timer = getattr(view, "_timer", None)
         if timer is not None:
             timer.stop()
+        popup = getattr(view, "settings_popup", None)
+        if popup is not None and not view.isAncestorOf(popup):
+            popup.hide()
+            popup.deleteLater()
         view.hide()
         view.deleteLater()
 
@@ -450,9 +607,10 @@ class DSAApplication(QMainWindow):
         for view in self.extra_eeg_views:
             view.setVisible(show_eeg)
         self.dsa_colorbar_view.setVisible(show_dsa and bool(self.extra_dsa_views))
+        self.eeg_colorbar_spacer.setVisible(bool(self.extra_eeg_views))  # holds the EEG gear
         # Hide the whole area so a hidden grid leaves no empty space.
         self.dsa_area.setVisible(show_dsa)
-        self.eeg_grid.setVisible(show_eeg)
+        self.eeg_area.setVisible(show_eeg)
 
     def _on_dsa_view_changed(self, start, end):
         self._sync_dsa_views(self.sender())
@@ -635,6 +793,10 @@ class DSAApplication(QMainWindow):
             self.player.pause()
             self._set_title_status(f"Paused {self._file_name}")
         else:
+            # Panned into the past while paused: play on from the right edge of the DSAs.
+            view_end = self.dsa_view.t0 + self.dsa_view._visible_width_sec() - self._file_t0
+            if not self.dsa_view.live_mode and 0 <= view_end < self.player.position:
+                self._seek_playback(view_end)
             self.player.resume()
             self._set_title_status(f"Playing {self._file_name}")
         self.playback_bar.set_playing(self.player.is_playing)
