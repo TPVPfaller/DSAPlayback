@@ -241,6 +241,7 @@ class DSAApplication(QMainWindow):
         self.playback_bar = PlaybackBar()
         self.playback_bar.hide()  # only shown while a file is played
         self._file_t0 = 0.0  # timestamp of the first sample of the played file
+        self._loaded_eeg = None  # (timestamps, channels) of a file opened with Load
         self.dsa_view.view_changed.connect(self._sync_overview_to_dsa)
         # Views of the channels after the first in a multi-channel file; channel 1 keeps
         # using dsa_view / eeg_view so the topbar and playback bar work on it unchanged.
@@ -749,6 +750,7 @@ class DSAApplication(QMainWindow):
             return False
 
         self._enter_file_mode(path, names)
+        self._loaded_eeg = (timestamps, channels)
         for view, columns in zip([self.dsa_view] + self.extra_dsa_views, channel_columns):
             for ts, psd, steps in columns:
                 self._append_dsa_steps(ts, psd, steps, view)
@@ -776,6 +778,7 @@ class DSAApplication(QMainWindow):
             return False
 
         self._enter_file_mode(path, names)
+        self._loaded_eeg = None
         self._file_t0 = float(timestamps[0])
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -790,6 +793,23 @@ class DSAApplication(QMainWindow):
         self.playback_bar.show()
         self._set_title_status(f"Playing {self._file_name}")
         return True
+
+    def _recompute_loaded_dsa(self):
+        """Recompute the DSA of a loaded file with the current settings, keeping zoom and pan."""
+        timestamps, channels = self._loaded_eeg
+        live_mode, pan_sec = self.dsa_view.live_mode, self.dsa_view._pan_sec
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for view, values in zip([self.dsa_view] + self.extra_dsa_views, channels):
+                view.clear_data()
+                for ts, psd, steps in compute_dsa_columns(timestamps, values, self.user_config):
+                    self._append_dsa_steps(ts, psd, steps, view)
+        finally:
+            QApplication.restoreOverrideCursor()
+        for view in self.extra_dsa_views:
+            view.update()
+        self.dsa_view.live_mode, self.dsa_view._pan_sec = live_mode, pan_sec
+        self.dsa_view.update()  # the other DSA views follow its span
 
     def _toggle_playback(self):
         if self.player.is_playing:
@@ -859,6 +879,7 @@ class DSAApplication(QMainWindow):
         self.player.stop()
         self.playback_bar.hide()
         self._file_name = None
+        self._loaded_eeg = None
         self.dsa_view.clear_data()
         self.eeg_view.clear_data()
         self._set_channels(["Ch 1"])
@@ -1053,6 +1074,7 @@ class DSAApplication(QMainWindow):
             self.playback_bar.set_window_width(display_minutes * 60.0)
 
     def _on_config_change(self, new_config):
+        old_config = self.user_config
         self.user_config = new_config
 
         if hasattr(self, 'action_multitaper'):
@@ -1076,6 +1098,12 @@ class DSAApplication(QMainWindow):
             self._update_overview()
             if dsa_recomputed:
                 self._seek_playback(self.player.position)
+        elif getattr(self, "_loaded_eeg", None) is not None and (
+            old_config.window_sec != new_config.window_sec
+            or old_config.window_overlap != new_config.window_overlap
+            or old_config.use_multitaper != new_config.use_multitaper
+        ):
+            self._recompute_loaded_dsa()
 
         self._update_status()
 
